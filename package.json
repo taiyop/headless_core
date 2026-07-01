@@ -1,0 +1,38 @@
+{
+  "name": "@headless-core/core",
+  "version": "0.1.0",
+  "description": "Core utilities for embedding headless AI Agent CLIs in WebGUI apps.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "headless-core": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.ja.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "check": "npm run build && npm test",
+    "example": "npm run build && node example/server.mjs",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

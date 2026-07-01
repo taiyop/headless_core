@@ -1,0 +1,8 @@
+{
+  "models": {
+    "codex": ["gpt-5.5"],
+    "claude": ["sonnet", "opus", "haiku", "fable"],
+    "agy": [],
+    "grok": ["grok-build"]
+  }
+}

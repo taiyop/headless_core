@@ -1,0 +1,6 @@
+.idea/
+docs/
+private_docs/
+node_modules/
+dist/
+coverage/

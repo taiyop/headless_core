@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>headless_core Chat Example</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <h1>headless_core Chat Example</h1>
+          <p>共有設定から利用可能なmodelだけを読み込む最小チャットです。</p>
+        </div>
+        <div class="actions">
+          <button id="reload" type="button">Reload models</button>
+          <button id="inspect" type="button">Run inspect</button>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="Agent, model, and reasoning effort selection">
+        <label>
+          Agent
+          <select id="agent"></select>
+        </label>
+        <label>
+          Model
+          <select id="model"></select>
+        </label>
+        <label>
+          Reasoning effort
+          <select id="reasoning-effort"></select>
+        </label>
+      </section>
+
+      <section id="status" class="status"></section>
+      <section class="inspect-panel" aria-label="Inspect output">
+        <div class="inspect-title">
+          <span>Inspect output</span>
+          <span id="inspect-code"></span>
+        </div>
+        <pre id="inspect-output"></pre>
+      </section>
+      <section id="chat" class="chat" aria-live="polite"></section>
+
+      <form id="form" class="composer">
+        <textarea id="message" rows="3" placeholder="メッセージを入力"></textarea>
+        <button id="send" type="submit">Send</button>
+      </form>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
