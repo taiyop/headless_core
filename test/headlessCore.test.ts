@@ -124,6 +124,8 @@ describe("createHeadlessCore", () => {
       "--print",
       "--output-format",
       "text",
+      "--tools",
+      "",
       "--model",
       "opus",
       "--effort",

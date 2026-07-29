@@ -154,6 +154,11 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv): C
         "--print",
         "--output-format",
         "text",
+        // Headless runs are text-in/text-out, so the agent must not use tools.
+        // Otherwise it may try to write a file and stop to ask for permission
+        // instead of printing the answer. Mirrors the codex read-only sandbox.
+        "--tools",
+        "",
         ...modelArgs,
         ...(reasoningEffort ? ["--effort", reasoningEffort] : []),
         prompt
