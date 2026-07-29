@@ -1,6 +1,6 @@
 {
   "name": "@headless-core/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Core utilities for embedding headless AI Agent CLIs in WebGUI apps.",
   "type": "module",
   "license": "MIT",
@@ -34,5 +34,9 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/taiyop/headless_core"
   }
 }

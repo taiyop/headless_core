@@ -33,6 +33,8 @@ For details, please refer to [example/README.md](./example/README.md).
 
 ## Installation
 
+Install the package from npm: [@headless-core/core](https://www.npmjs.com/package/@headless-core/core)
+
 ```sh
 npm install @headless-core/core
 ```

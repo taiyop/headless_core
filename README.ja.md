@@ -33,6 +33,8 @@ http://127.0.0.1:4173
 
 ## Installation
 
+npm の [@headless-core/core](https://www.npmjs.com/package/@headless-core/core) からインストールできます。
+
 ```sh
 npm install @headless-core/core
 ```
