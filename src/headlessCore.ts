@@ -170,7 +170,14 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv): C
 
   return {
     command: env.GROK_BIN || "grok",
-    args: [...modelArgs, "--output-format", "plain", "--single", prompt]
+    args: [
+      ...modelArgs,
+      ...(reasoningEffort ? ["--effort", reasoningEffort] : []),
+      "--output-format",
+      "plain",
+      "--single",
+      prompt
+    ]
   };
 }
 

@@ -7,7 +7,7 @@ const REASONING_EFFORT_OPTIONS_BY_AGENT = {
   codex: [DEFAULT_REASONING_EFFORT_ID, "low", "medium", "high", "xhigh"],
   claude: [DEFAULT_REASONING_EFFORT_ID, "low", "medium", "high", "xhigh", "max"],
   agy: [DEFAULT_REASONING_EFFORT_ID],
-  grok: [DEFAULT_REASONING_EFFORT_ID]
+  grok: [DEFAULT_REASONING_EFFORT_ID, "low", "medium", "high"]
 } as const;
 
 export function getAvailableReasoningEffortOptions(options: GetAvailableReasoningEffortOptionsOptions): string[] {

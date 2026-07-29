@@ -132,6 +132,51 @@ describe("createHeadlessCore", () => {
     ]);
   });
 
+  it("runs grok with model and reasoning effort mapped to effort args", async () => {
+    const bin = await writeExecutable(
+      "fake-grok-args.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, GROK_BIN: bin } });
+
+    const output = await headless.run({
+      agent: { provider: "grok", model: "grok-4.5", reasoningEffort: "medium" },
+      prompt: "hello"
+    });
+
+    expect(JSON.parse(output)).toEqual([
+      "--model",
+      "grok-4.5",
+      "--effort",
+      "medium",
+      "--output-format",
+      "plain",
+      "--single",
+      "hello"
+    ]);
+  });
+
+  it("omits grok effort args when the default reasoning effort is selected", async () => {
+    const bin = await writeExecutable(
+      "fake-grok-default-reasoning-effort.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, GROK_BIN: bin } });
+
+    const output = await headless.run({
+      agent: { provider: "grok", model: DEFAULT_MODEL_ID, reasoningEffort: DEFAULT_REASONING_EFFORT_ID },
+      prompt: "hello"
+    });
+
+    expect(JSON.parse(output)).toEqual(["--output-format", "plain", "--single", "hello"]);
+  });
+
   it("emits progress events and returns stdout", async () => {
     const bin = await writeExecutable(
       "fake-grok.mjs",

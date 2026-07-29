@@ -121,8 +121,13 @@ describe("getAvailableReasoningEffortOptions", () => {
     ]);
   });
 
-  it("returns only default for agents without reasoning effort options", () => {
-    expect(getAvailableReasoningEffortOptions({ agent: "grok" })).toEqual([DEFAULT_REASONING_EFFORT_ID]);
+  it("returns effort choices for grok", () => {
+    expect(getAvailableReasoningEffortOptions({ agent: "grok" })).toEqual([
+      DEFAULT_REASONING_EFFORT_ID,
+      "low",
+      "medium",
+      "high"
+    ]);
   });
 
   it("throws a typed error for unsupported agents", () => {
