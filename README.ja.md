@@ -168,7 +168,7 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | --- | --- | --- | --- |
 | Codex | `codex` or `CODEX_BIN` | `--model` | `--config model_reasoning_effort="..."` |
 | Claude Code | `claude` or `CLAUDE_BIN` | `--model` | `--effort` |
-| Grok | `grok` or `GROK_BIN` | `--model` | 未対応 |
+| Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
 | Agy | `agy` or `AGY_BIN` | `--model` | 未対応 |
 
 ## Models Config
