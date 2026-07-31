@@ -171,6 +171,15 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
 | Agy | `agy` or `AGY_BIN` | `--model` | 未対応 |
 
+### Headless 時のツール / 権限
+
+| agent | Headless 時の挙動 |
+| --- | --- |
+| Codex | `--sandbox read-only`（ファイル書き込み不可） |
+| Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ） |
+| Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる |
+| Grok | 特別な sandbox フラグなし |
+
 ## Models Config
 
 モデル候補は共有設定ファイルから読みます。

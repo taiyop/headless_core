@@ -171,6 +171,15 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
 | Agy | `agy` or `AGY_BIN` | `--model` | Not supported |
 
+### Headless tool / permission notes
+
+| agent | Headless behavior |
+| --- | --- |
+| Codex | `--sandbox read-only` (no file writes) |
+| Claude Code | `--tools ""` (no tools; text-in/text-out only) |
+| Agy | `--dangerously-skip-permissions` and `--mode accept-edits` so non-interactive `--print` can run tools and write files (e.g. image generation). `--print-timeout` matches the run `timeoutMs` |
+| Grok | No special sandbox flags |
+
 ## Models Config
 
 Model candidates are read from a shared configuration file:

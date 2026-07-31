@@ -134,6 +134,64 @@ describe("createHeadlessCore", () => {
     ]);
   });
 
+  it("runs agy with skip-permissions, accept-edits, and timeout-aligned print-timeout", async () => {
+    const bin = await writeExecutable(
+      "fake-agy.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, AGY_BIN: bin } });
+
+    const output = await headless.run({
+      agent: { provider: "agy", model: "gemini-3.5-flash" },
+      prompt: "create image",
+      timeoutMs: 300_000
+    });
+
+    expect(JSON.parse(output)).toEqual([
+      "--model",
+      "gemini-3.5-flash",
+      "--dangerously-skip-permissions",
+      "--mode",
+      "accept-edits",
+      "--print-timeout",
+      "5m",
+      "--print",
+      "create image"
+    ]);
+  });
+
+  it("omits agy model args when the default model is selected", async () => {
+    const bin = await writeExecutable(
+      "fake-agy-default.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({
+      env: { ...process.env, AGY_BIN: bin },
+      timeoutMs: 120_000
+    });
+
+    const output = await headless.run({
+      agent: { provider: "agy", model: DEFAULT_MODEL_ID },
+      prompt: "hello"
+    });
+
+    expect(JSON.parse(output)).toEqual([
+      "--dangerously-skip-permissions",
+      "--mode",
+      "accept-edits",
+      "--print-timeout",
+      "2m",
+      "--print",
+      "hello"
+    ]);
+  });
+
   it("runs grok with model and reasoning effort mapped to effort args", async () => {
     const bin = await writeExecutable(
       "fake-grok-args.mjs",

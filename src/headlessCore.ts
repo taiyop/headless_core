@@ -90,13 +90,14 @@ async function runWithFallback(config: HeadlessCoreConfig, options: HeadlessRunO
 
 async function runOnce(config: HeadlessCoreConfig, options: HeadlessRunOptions): Promise<string> {
   validateRunOptions(options);
-  const { command, args } = commandFor(options.agent, options.prompt, config.env ?? process.env);
+  const timeoutMs = options.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const { command, args } = commandFor(options.agent, options.prompt, config.env ?? process.env, timeoutMs);
   await emitProgress(options, { state: "starting", agent: options.agent, message: `Starting ${options.agent.provider}` });
   const result = await runCommand(command, args, {
     cwd: config.cwd ?? process.cwd(),
     env: config.env ?? process.env,
     signal: options.signal,
-    timeoutMs: options.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    timeoutMs,
     onStdout: (partialOutput) => emitProgress(options, { state: "running", agent: options.agent, partialOutput }),
     onStderr: (partialOutput) => emitProgress(options, { state: "running", agent: options.agent, partialOutput })
   });
@@ -122,7 +123,21 @@ function validateRunOptions(options: HeadlessRunOptions): void {
   }
 }
 
-function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv): CommandSpec {
+/** Format milliseconds as an Agy --print-timeout duration (e.g. 2m, 5m0s, 90s). */
+function formatAgyPrintTimeout(timeoutMs: number): string {
+  const totalSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) {
+    return `${seconds}s`;
+  }
+  if (seconds === 0) {
+    return `${minutes}m`;
+  }
+  return `${minutes}m${seconds}s`;
+}
+
+function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv, timeoutMs: number): CommandSpec {
   const provider = agent.provider;
   const modelArgs = agent.model && agent.model !== DEFAULT_MODEL_ID ? ["--model", agent.model] : [];
   const reasoningEffort =
@@ -169,7 +184,20 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv): C
   if (provider === "agy") {
     return {
       command: env.AGY_BIN || "agy",
-      args: [...modelArgs, "--print-timeout", "2m", "--print", prompt]
+      args: [
+        ...modelArgs,
+        // Non-interactive --print cannot answer tool permission prompts.
+        // Auto-approve so agents can use tools that write files (e.g. image generation).
+        "--dangerously-skip-permissions",
+        // Accept file edits without interactive confirmation.
+        "--mode",
+        "accept-edits",
+        // Keep Agy's own wait aligned with this run's timeout.
+        "--print-timeout",
+        formatAgyPrintTimeout(timeoutMs),
+        "--print",
+        prompt
+      ]
     };
   }
 
