@@ -177,7 +177,7 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | --- | --- |
 | Codex | `--sandbox read-only`（ファイル書き込み不可） |
 | Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ） |
-| Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる |
+| Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる。ツールがそれでも自動拒否された場合、Agy は stdout 空のまま exit 0 で stderr に通知を出すことがあり、そのときは失敗として扱う。 |
 | Grok | 特別な sandbox フラグなし |
 
 ## Models Config

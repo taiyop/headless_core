@@ -163,6 +163,25 @@ describe("createHeadlessCore", () => {
     ]);
   });
 
+  it("fails agy when headless mode auto-denies a command permission with empty stdout", async () => {
+    const bin = await writeExecutable(
+      "fake-agy-permission-denied.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stderr.write('jetski: no output produced — a tool required the \"command\" permission that headless mode cannot prompt for, so it was auto-denied. Add an allow-rule under permissions.allow in settings.json (e.g. command(<target>)). Alternatively, re-run with --dangerously-skip-permissions to auto-approve all tools.');",
+        "process.exit(0);"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, AGY_BIN: bin } });
+
+    await expect(
+      headless.run({
+        agent: { provider: "agy", model: "gemini-3.5-flash" },
+        prompt: "hello"
+      })
+    ).rejects.toThrow(/command" permission that headless mode cannot prompt/);
+  });
+
   it("omits agy model args when the default model is selected", async () => {
     const bin = await writeExecutable(
       "fake-agy-default.mjs",

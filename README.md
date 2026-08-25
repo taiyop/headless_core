@@ -177,7 +177,7 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | --- | --- |
 | Codex | `--sandbox read-only` (no file writes) |
 | Claude Code | `--tools ""` (no tools; text-in/text-out only) |
-| Agy | `--dangerously-skip-permissions` and `--mode accept-edits` so non-interactive `--print` can run tools and write files (e.g. image generation). `--print-timeout` matches the run `timeoutMs` |
+| Agy | `--dangerously-skip-permissions` and `--mode accept-edits` so non-interactive `--print` can run tools and write files (e.g. image generation). `--print-timeout` matches the run `timeoutMs`. If a tool is still auto-denied, Agy may exit 0 with an empty stdout and a stderr notice; that is treated as a failed run. |
 | Grok | No special sandbox flags |
 
 ## Models Config

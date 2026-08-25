@@ -289,6 +289,11 @@ function runCommand(
     child.on("close", (code) => {
       if (settled) return;
       if (code === 0) {
+        const permissionDenial = headlessPermissionDenialMessage(stdout, stderr);
+        if (permissionDenial) {
+          finishReject(createRunFailure(permissionDenial, stdout, stderr, classifyError(permissionDenial)));
+          return;
+        }
         finishResolve();
         return;
       }
@@ -345,6 +350,32 @@ function classifyError(message: string): HeadlessError["kind"] {
     return "network";
   }
   return "unknown";
+}
+
+/**
+ * Agy/jetski soft-denies tools in headless mode: it prints a notice to stderr,
+ * exits 0, and leaves stdout empty. Treat that as a failed run instead of
+ * returning the diagnostic as the agent answer.
+ */
+function headlessPermissionDenialMessage(stdout: string, stderr: string): string | undefined {
+  if (stdout.trim()) {
+    return undefined;
+  }
+
+  const message = stderr.trim();
+  if (!message) {
+    return undefined;
+  }
+
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("headless mode cannot prompt") ||
+    (normalized.includes("no output produced") && normalized.includes("dangerously-skip-permissions"))
+  ) {
+    return message;
+  }
+
+  return undefined;
 }
 
 function createProgressSnapshot(agent: AgentSpec, failure: RunFailure): ProgressSnapshot {
