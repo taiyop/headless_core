@@ -1,6 +1,6 @@
 {
   "name": "@headless-core/core",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Core utilities for embedding headless AI Agent CLIs in WebGUI apps.",
   "type": "module",
   "license": "MIT",
