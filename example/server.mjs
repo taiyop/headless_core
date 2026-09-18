@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { createServer } from "node:http";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -18,9 +19,12 @@ const host = process.env.HOST ?? "127.0.0.1";
 const maxPortAttempts = 20;
 let port = preferredPort;
 
-process.env.HEADLESS_CORE_MODELS_PATH ??= path.join(__dirname, "models.json");
+const envModelsPath = process.env.HEADLESS_CORE_MODELS_PATH;
+const localModelsPath = envModelsPath ?? path.join(__dirname, "models.json");
+// Same default as resolveModelsConfigPath in src/config.ts.
+const sharedModelsPath = path.join(homedir(), ".config", "headless-core", "models.json");
 
-const agents = ["codex", "claude", "agy", "grok"];
+const agents = ["codex", "claude", "agy", "grok", "devin"];
 const exampleBinDir = path.join(__dirname, "bin");
 let inspectedModelsByAgent = null;
 const headless = createHeadlessCore({
@@ -44,11 +48,14 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/models") {
-      return json(res, 200, { agents: await loadModelsByAgent() });
+      const source = normalizeModelsSource(url.searchParams.get("source"));
+      const modelsPath = applyModelsSource(source);
+      return json(res, 200, { source, modelsPath, agents: await loadModelsByAgent() });
     }
 
     if (req.method === "POST" && url.pathname === "/api/inspect") {
-      const result = await runInspect();
+      const body = await readJson(req);
+      const result = await runInspect(normalizeModelsSource(body.source));
       return json(res, 200, result);
     }
 
@@ -77,7 +84,7 @@ server.on("error", (error) => {
 
 server.on("listening", () => {
   console.log(`Example chat running at http://${host}:${port}`);
-  console.log(`Using models config: ${process.env.HEADLESS_CORE_MODELS_PATH}`);
+  console.log(`Models config sources: local=${localModelsPath} shared=${sharedModelsPath}`);
 });
 
 server.listen(port, host);
@@ -118,6 +125,7 @@ async function runChat(body) {
     throw new Error(`Unsupported reasoning effort: ${reasoningEffort}`);
   }
 
+  applyModelsSource(asString(body.source));
   const availableModels = await getAvailableModelsForChat(agent);
   if (!availableModels.includes(model)) {
     throw new Error(`Model "${model}" is not available for ${agent}`);
@@ -134,7 +142,8 @@ async function runChat(body) {
   });
 }
 
-async function runInspect() {
+async function runInspect(source) {
+  applyModelsSource(source);
   const result = await runCommandDetailed("headless-core", ["models", "inspect"], 30_000, {
     ...process.env,
     PATH: `${exampleBinDir}${path.delimiter}${process.env.PATH ?? ""}`
@@ -239,6 +248,22 @@ function runCommandDetailed(command, args, timeoutMs, env = process.env) {
       resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
     });
   });
+}
+
+function normalizeModelsSource(value) {
+  return value === "shared" ? "shared" : "local";
+}
+
+// getAvailableModels reads HEADLESS_CORE_MODELS_PATH on every call, so the
+// selected source is applied through the environment. "shared" drops the
+// override so the library default is used.
+function applyModelsSource(source) {
+  if (source === "shared") {
+    delete process.env.HEADLESS_CORE_MODELS_PATH;
+    return sharedModelsPath;
+  }
+  process.env.HEADLESS_CORE_MODELS_PATH = localModelsPath;
+  return localModelsPath;
 }
 
 function serveFile(res, filePath, contentType) {

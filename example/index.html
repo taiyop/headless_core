@@ -11,7 +11,7 @@
       <section class="topbar">
         <div>
           <h1>headless_core Chat Example</h1>
-          <p>共有設定から利用可能なmodelだけを読み込む最小チャットです。</p>
+          <p>models.jsonから利用可能なmodelだけを読み込む最小チャットです。</p>
         </div>
         <div class="actions">
           <button id="reload" type="button">Reload models</button>
@@ -19,7 +19,14 @@
         </div>
       </section>
 
-      <section class="controls" aria-label="Agent, model, and reasoning effort selection">
+      <section class="controls" aria-label="Models source, agent, model, and reasoning effort selection">
+        <label>
+          Models source
+          <select id="models-source">
+            <option value="local">example/models.json</option>
+            <option value="shared">~/.config/headless-core/models.json</option>
+          </select>
+        </label>
         <label>
           Agent
           <select id="agent"></select>

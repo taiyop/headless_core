@@ -1,3 +1,4 @@
+const modelsSourceSelect = document.querySelector("#models-source");
 const agentSelect = document.querySelector("#agent");
 const modelSelect = document.querySelector("#model");
 const reasoningEffortSelect = document.querySelector("#reasoning-effort");
@@ -17,11 +18,21 @@ const fallbackReasoningEffortOptionsByAgent = {
   codex: ["default", "low", "medium", "high", "xhigh"],
   claude: ["default", "low", "medium", "high", "xhigh", "max"],
   agy: ["default"],
-  grok: ["default"]
+  grok: ["default"],
+  devin: ["default", "low", "medium", "high", "xhigh", "max"]
 };
+
+const savedModelsSource = localStorage.getItem("modelsSource");
+if (savedModelsSource === "local" || savedModelsSource === "shared") {
+  modelsSourceSelect.value = savedModelsSource;
+}
 
 reloadButton.addEventListener("click", loadModels);
 inspectButton.addEventListener("click", runInspect);
+modelsSourceSelect.addEventListener("change", () => {
+  localStorage.setItem("modelsSource", modelsSourceSelect.value);
+  loadModels();
+});
 agentSelect.addEventListener("change", () => {
   renderModelOptions();
   renderReasoningEffortOptions();
@@ -38,7 +49,8 @@ async function loadModels() {
   sendButton.disabled = true;
 
   try {
-    const response = await fetch("/api/models");
+    const source = modelsSourceSelect.value;
+    const response = await fetch(`/api/models?source=${encodeURIComponent(source)}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? "Failed to load models");
 
@@ -46,7 +58,8 @@ async function loadModels() {
     renderAgentOptions();
     renderModelOptions();
     renderReasoningEffortOptions();
-    setStatus("Models loaded from shared config.");
+    const configError = Object.values(modelsByAgent).find((entry) => entry?.error)?.error;
+    setStatus(configError ?? `Models loaded from ${data.modelsPath}.`, Boolean(configError));
   } catch (error) {
     setStatus(error.message, true);
   } finally {
@@ -71,7 +84,7 @@ async function sendMessage() {
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent, model, reasoningEffort, messages })
+      body: JSON.stringify({ agent, model, reasoningEffort, messages, source: modelsSourceSelect.value })
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? "Chat failed");
@@ -93,7 +106,11 @@ async function runInspect() {
   inspectButton.disabled = true;
 
   try {
-    const response = await fetch("/api/inspect", { method: "POST" });
+    const response = await fetch("/api/inspect", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ source: modelsSourceSelect.value })
+    });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? "Inspect failed");
 

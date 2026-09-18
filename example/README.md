@@ -26,7 +26,7 @@ HEADLESS_CORE_MODELS_PATH=./example/models.json node dist/cli.js models init
 node dist/cli.js models inspect > ./example/models.json
 ```
 
-このexampleは `HEADLESS_CORE_MODELS_PATH` が未指定なら `./example/models.json` を使います。
+GUIの `Models source` で `./example/models.json` (Local) と `~/.config/headless-core/models.json` (Shared) を切り替えられます。`HEADLESS_CORE_MODELS_PATH` を指定した場合、そのpathがLocal側として使われます。
 
 UI上でも `Run inspect` を押すと、同じ `headless-core models inspect` 相当の stdout / stderr を確認できます。これは検証用で、`example/models.json` は更新しません。
 
