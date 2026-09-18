@@ -29,6 +29,8 @@ After starting, open it in your browser.
 http://127.0.0.1:4173
 ```
 
+You can override the address with the `PORT` / `HOST` environment variables. If the port is already in use, the next ports are tried automatically (up to 20).
+
 For details, please refer to [example/README.md](./example/README.md).
 
 ## Installation

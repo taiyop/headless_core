@@ -29,6 +29,8 @@ npm run example
 http://127.0.0.1:4173
 ```
 
+`PORT` / `HOST` 環境変数で変更できます。ポートが使用中の場合は自動で次のポートを試します(最大20ポート)。
+
 詳細は [example/README.md](./example/README.md) を参照してください。
 
 ## Installation

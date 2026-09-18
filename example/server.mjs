@@ -13,8 +13,10 @@ import {
 } from "../dist/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const port = Number(process.env.PORT ?? 4173);
+const preferredPort = Number(process.env.PORT ?? 4173);
 const host = process.env.HOST ?? "127.0.0.1";
+const maxPortAttempts = 20;
+let port = preferredPort;
 
 process.env.HEADLESS_CORE_MODELS_PATH ??= path.join(__dirname, "models.json");
 
@@ -62,10 +64,23 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, host, () => {
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE" && port < preferredPort + maxPortAttempts) {
+    const nextPort = port + 1;
+    console.log(`Port ${port} is in use, trying ${nextPort}...`);
+    port = nextPort;
+    server.listen(port, host);
+    return;
+  }
+  throw error;
+});
+
+server.on("listening", () => {
   console.log(`Example chat running at http://${host}:${port}`);
   console.log(`Using models config: ${process.env.HEADLESS_CORE_MODELS_PATH}`);
 });
+
+server.listen(port, host);
 
 async function loadModelsByAgent() {
   const result = {};
