@@ -2,11 +2,11 @@
 
 AI Agent CLI を Node.js から headless mode で実行するためのコアライブラリです。
 
-Claude Code、Codex、Grok、Agy などのローカル CLI を、同じ `run()` API、進捗イベント、fallback hook、モデル選択の仕組みで扱えます。
+Claude Code、Codex、Grok、Agy、Devin などのローカル CLI を、同じ `run()` API、進捗イベント、fallback hook、モデル選択の仕組みで扱えます。
 
 ## Features
 
-- Claude Code / Codex / Grok / Agy の CLI 実行
+- Claude Code / Codex / Grok / Agy / Devin の CLI 実行
 - TypeScript API
 - `stdout` / `stderr` の途中出力を `onProgress` で通知
 - `timeoutMs` と `AbortSignal` による停止
@@ -153,7 +153,7 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 
 | option | description |
 | --- | --- |
-| `agent.provider` | `codex`、`claude`、`grok`、`agy` |
+| `agent.provider` | `codex`、`claude`、`grok`、`agy`、`devin` |
 | `agent.model` | provider に渡す model id。`default` の場合は `--model` を渡さない |
 | `agent.reasoningEffort` | provider に渡す reasoning effort。`default` の場合は渡さない |
 | `prompt` | Agent CLI に渡す指示 |
@@ -170,6 +170,7 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | Claude Code | `claude` or `CLAUDE_BIN` | `--model` | `--effort` |
 | Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
 | Agy | `agy` or `AGY_BIN` | `--model` | 未対応 |
+| Devin | `devin` or `DEVIN_BIN` | `--model` | model uid に折り畳む: `model` + effort は `--model <model>-<effort>` になる（例: `claude-opus-5` + `high` -> `claude-opus-5-high`）。model の明示指定が必要。family によって未対応の level がある |
 
 ### Headless 時のツール / 権限
 
@@ -179,6 +180,7 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ） |
 | Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる。ツールがそれでも自動拒否された場合、Agy は stdout 空のまま exit 0 で stderr に通知を出すことがあり、そのときは失敗として扱う。 |
 | Grok | 特別な sandbox フラグなし |
+| Devin | `--print --respect-workspace-trust false --permission-mode auto`（read-only ツールのみ自動承認・ファイル書き込み不可）。prompt は `--` の後に渡す |
 
 ## Models Config
 

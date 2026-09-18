@@ -5,6 +5,7 @@ import {
   inspectAgentModels,
   parseAgyModels,
   parseCodexModels,
+  parseDevinModels,
   parseGrokModels
 } from "../src/inspectors.js";
 
@@ -28,6 +29,28 @@ describe("parseAgyModels", () => {
       "Gemini 3.5 Flash (Medium)",
       "Claude Opus 4.6 (Thinking)"
     ]);
+  });
+});
+
+describe("parseDevinModels", () => {
+  it("extracts the slug of every model family sorted by name", () => {
+    const stdout = JSON.stringify({
+      families: [
+        {
+          family_label: "SWE-2",
+          slug: "swe-2",
+          variants: [{ model_uid: "swe-2-medium" }]
+        },
+        {
+          family_label: "Claude Opus 5",
+          slug: "claude-opus-5",
+          variants: [{ model_uid: "claude-opus-5-medium" }, { model_uid: "claude-opus-5-high" }]
+        },
+        { family_label: "Empty", variants: [] }
+      ]
+    });
+
+    expect(parseDevinModels(stdout)).toEqual(["claude-opus-5", "swe-2"]);
   });
 });
 

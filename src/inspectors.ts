@@ -41,6 +41,10 @@ export async function inspectAgentModels(agent: AgentId): Promise<InspectResult>
       return { agent, models: parseAgyModels(await run("agy", ["models"])) };
     }
 
+    if (agent === "devin") {
+      return { agent, models: parseDevinModels(await run("devin", ["models", "list", "--format", "json"])) };
+    }
+
     return { agent, models: parseGrokModels(await run("grok", ["models"])) };
   } catch (cause) {
     return { agent, models: [], warning: commandFailureReason(agent, cause) };
@@ -68,6 +72,21 @@ export function parseAgyModels(stdout: string): string[] {
     .filter(Boolean);
 }
 
+export function parseDevinModels(stdout: string): string[] {
+  const catalog = JSON.parse(stdout) as {
+    families?: Array<{ slug?: unknown }>;
+  };
+
+  if (!Array.isArray(catalog.families)) {
+    return [];
+  }
+
+  return catalog.families
+    .map((family) => family.slug)
+    .filter((modelId): modelId is string => typeof modelId === "string")
+    .sort();
+}
+
 export function parseGrokModels(stdout: string): string[] {
   const lines = stripAnsi(stdout).split(/\r?\n/);
   const start = lines.findIndex((line) => line.trim() === "Available models:");
@@ -87,7 +106,13 @@ export function formatInspectWarning(agent: AgentId, reason: string, configPath:
 
 export function commandFailureReason(agent: AgentId, cause: unknown): string {
   const command =
-    agent === "codex" ? "codex debug models" : agent === "agy" ? "agy models" : "grok models";
+    agent === "codex"
+      ? "codex debug models"
+      : agent === "agy"
+        ? "agy models"
+        : agent === "devin"
+          ? "devin models list --format json"
+          : "grok models";
   const stderr = getErrorOutput(cause, "stderr");
   if (stderr) {
     return `Command failed: ${command}: ${oneLine(stderr)}`;

@@ -24,6 +24,11 @@
     "grok": [
       "grok-build",
       "grok-composer-2.5-fast"
+    ],
+    "devin": [
+      "swe-2",
+      "claude-opus-5",
+      "gpt-6-astra"
     ]
   }
 }

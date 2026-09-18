@@ -121,6 +121,34 @@ function validateRunOptions(options: HeadlessRunOptions): void {
   if (!(AGENT_IDS as readonly string[]).includes(options.agent.provider)) {
     throw new Error(`Unsupported provider: ${options.agent.provider}`);
   }
+  if (
+    options.agent.provider === "devin" &&
+    options.agent.reasoningEffort &&
+    options.agent.reasoningEffort !== DEFAULT_REASONING_EFFORT_ID &&
+    (!options.agent.model || options.agent.model === DEFAULT_MODEL_ID)
+  ) {
+    throw new Error(
+      'devin reasoningEffort requires an explicit agent.model (thinking levels are model variant suffixes, e.g. "claude-opus-5-high")'
+    );
+  }
+}
+
+/**
+ * Devin has no separate effort flag: thinking levels are model uid suffixes
+ * (e.g. claude-opus-5-high). Fold the effort into the model id by replacing an
+ * existing level suffix (keeping -fast/-priority tails), or appending it to a
+ * family slug. Dotted slugs use dashes in variant uids: gpt-5.6-sol ->
+ * gpt-5-6-sol-high. Families without the requested level fail at run time.
+ */
+function devinModelWithEffort(model: string | undefined, effort: string | undefined): string | undefined {
+  if (!model || model === DEFAULT_MODEL_ID || !effort) {
+    return model;
+  }
+  const levelSuffix = /-(none|minimal|low|medium|high|xhigh|max|thinking)(-(?:fast|priority))?$/;
+  if (levelSuffix.test(model)) {
+    return model.replace(levelSuffix, `-${effort}$2`);
+  }
+  return `${model.replace(/\./g, "-")}-${effort}`;
 }
 
 /** Format milliseconds as an Agy --print-timeout duration (e.g. 2m, 5m0s, 90s). */
@@ -196,6 +224,28 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv, ti
         "--print-timeout",
         formatAgyPrintTimeout(timeoutMs),
         "--print",
+        prompt
+      ]
+    };
+  }
+
+  if (provider === "devin") {
+    const devinModel = devinModelWithEffort(agent.model, reasoningEffort);
+    return {
+      command: env.DEVIN_BIN || "devin",
+      args: [
+        "--print",
+        // Non-interactive runs cannot answer the workspace trust prompt and
+        // would fail in an untrusted directory.
+        "--respect-workspace-trust",
+        "false",
+        // Keep the default posture explicit: auto-approves read-only tools
+        // only, so a headless run can inspect files but not change them.
+        // Mirrors the codex read-only sandbox and claude's disabled tools.
+        "--permission-mode",
+        "auto",
+        ...(devinModel && devinModel !== DEFAULT_MODEL_ID ? ["--model", devinModel] : []),
+        "--",
         prompt
       ]
     };

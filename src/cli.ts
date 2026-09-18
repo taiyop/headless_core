@@ -31,7 +31,8 @@ async function initModelsConfig(): Promise<number> {
       codex: [],
       claude: [...CLAUDE_MODEL_IDS],
       agy: [],
-      grok: []
+      grok: [],
+      devin: []
     }
   };
 

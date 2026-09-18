@@ -1,4 +1,4 @@
-export const AGENT_IDS = ["codex", "claude", "agy", "grok"] as const;
+export const AGENT_IDS = ["codex", "claude", "agy", "grok", "devin"] as const;
 export const DEFAULT_MODEL_ID = "default";
 export const DEFAULT_REASONING_EFFORT_ID = "default";
 export const CLAUDE_MODEL_IDS = ["sonnet", "opus", "haiku", "fable"] as const;

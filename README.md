@@ -2,11 +2,11 @@
 
 A core library for running AI Agent CLIs in headless mode from Node.js.
 
-It allows you to run local CLIs such as Claude Code, Codex, Grok, and Agy using the same `run()` API, progress events, fallback hooks, and model selection mechanisms.
+It allows you to run local CLIs such as Claude Code, Codex, Grok, Agy, and Devin using the same `run()` API, progress events, fallback hooks, and model selection mechanisms.
 
 ## Features
 
-- CLI execution for Claude Code / Codex / Grok / Agy
+- CLI execution for Claude Code / Codex / Grok / Agy / Devin
 - TypeScript API
 - Progress notifications for intermediate `stdout` / `stderr` outputs via `onProgress`
 - Cancellation using `timeoutMs` and `AbortSignal`
@@ -153,7 +153,7 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 
 | option | description |
 | --- | --- |
-| `agent.provider` | `codex`, `claude`, `grok`, `agy` |
+| `agent.provider` | `codex`, `claude`, `grok`, `agy`, `devin` |
 | `agent.model` | Model ID passed to the provider. If `default`, `--model` is not passed |
 | `agent.reasoningEffort` | Reasoning effort passed to the provider. If `default`, it is not passed |
 | `prompt` | Instructions passed to the Agent CLI |
@@ -170,6 +170,7 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | Claude Code | `claude` or `CLAUDE_BIN` | `--model` | `--effort` |
 | Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
 | Agy | `agy` or `AGY_BIN` | `--model` | Not supported |
+| Devin | `devin` or `DEVIN_BIN` | `--model` | Folded into the model uid: `model` + effort becomes `--model <model>-<effort>` (e.g. `claude-opus-5` + `high` -> `claude-opus-5-high`). Requires an explicit model; not every family supports every level |
 
 ### Headless tool / permission notes
 
@@ -179,6 +180,7 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | Claude Code | `--tools ""` (no tools; text-in/text-out only) |
 | Agy | `--dangerously-skip-permissions` and `--mode accept-edits` so non-interactive `--print` can run tools and write files (e.g. image generation). `--print-timeout` matches the run `timeoutMs`. If a tool is still auto-denied, Agy may exit 0 with an empty stdout and a stderr notice; that is treated as a failed run. |
 | Grok | No special sandbox flags |
+| Devin | `--print --respect-workspace-trust false --permission-mode auto` (read-only tools auto-approved; no file writes). The prompt is passed after `--` |
 
 ## Models Config
 

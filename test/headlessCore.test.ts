@@ -211,6 +211,162 @@ describe("createHeadlessCore", () => {
     ]);
   });
 
+  it("runs devin in print mode with workspace trust skipped and read-only permissions", async () => {
+    const bin = await writeExecutable(
+      "fake-devin.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, DEVIN_BIN: bin } });
+
+    const output = await headless.run({
+      agent: { provider: "devin", model: "claude-opus-5-high" },
+      prompt: "hello"
+    });
+
+    expect(JSON.parse(output)).toEqual([
+      "--print",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "auto",
+      "--model",
+      "claude-opus-5-high",
+      "--",
+      "hello"
+    ]);
+  });
+
+  it("folds devin reasoning effort into the model uid suffix", async () => {
+    const bin = await writeExecutable(
+      "fake-devin-effort.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, DEVIN_BIN: bin } });
+
+    const output = await headless.run({
+      agent: { provider: "devin", model: "claude-opus-5", reasoningEffort: "high" },
+      prompt: "hello"
+    });
+
+    expect(JSON.parse(output)).toEqual([
+      "--print",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "auto",
+      "--model",
+      "claude-opus-5-high",
+      "--",
+      "hello"
+    ]);
+  });
+
+  it("replaces an existing devin model level suffix with the selected effort", async () => {
+    const bin = await writeExecutable(
+      "fake-devin-effort-replace.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, DEVIN_BIN: bin } });
+
+    const output = await headless.run({
+      agent: { provider: "devin", model: "claude-opus-5-medium-fast", reasoningEffort: "xhigh" },
+      prompt: "hello"
+    });
+
+    expect(JSON.parse(output)).toEqual([
+      "--print",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "auto",
+      "--model",
+      "claude-opus-5-xhigh-fast",
+      "--",
+      "hello"
+    ]);
+  });
+
+  it("converts dotted devin family slugs when folding the effort", async () => {
+    const bin = await writeExecutable(
+      "fake-devin-effort-dotted.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, DEVIN_BIN: bin } });
+
+    const output = await headless.run({
+      agent: { provider: "devin", model: "gpt-5.6-sol", reasoningEffort: "low" },
+      prompt: "hello"
+    });
+
+    expect(JSON.parse(output)).toEqual([
+      "--print",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "auto",
+      "--model",
+      "gpt-5-6-sol-low",
+      "--",
+      "hello"
+    ]);
+  });
+
+  it("rejects devin reasoning effort when the default model is selected", async () => {
+    const bin = await writeExecutable(
+      "fake-devin-effort-default.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, DEVIN_BIN: bin } });
+
+    await expect(
+      headless.run({
+        agent: { provider: "devin", model: DEFAULT_MODEL_ID, reasoningEffort: "high" },
+        prompt: "hello"
+      })
+    ).rejects.toThrow(/devin reasoningEffort requires an explicit agent\.model/);
+  });
+
+  it("omits devin model args when the default model is selected", async () => {
+    const bin = await writeExecutable(
+      "fake-devin-default.mjs",
+      [
+        "#!/usr/bin/env node",
+        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+      ].join("\n")
+    );
+    const headless = createHeadlessCore({ env: { ...process.env, DEVIN_BIN: bin } });
+
+    const output = await headless.run({
+      agent: { provider: "devin", model: DEFAULT_MODEL_ID },
+      prompt: "hello"
+    });
+
+    expect(JSON.parse(output)).toEqual([
+      "--print",
+      "--respect-workspace-trust",
+      "false",
+      "--permission-mode",
+      "auto",
+      "--",
+      "hello"
+    ]);
+  });
+
   it("runs grok with model and reasoning effort mapped to effort args", async () => {
     const bin = await writeExecutable(
       "fake-grok-args.mjs",

@@ -130,6 +130,17 @@ describe("getAvailableReasoningEffortOptions", () => {
     ]);
   });
 
+  it("returns effort choices for devin folded into the model uid", () => {
+    expect(getAvailableReasoningEffortOptions({ agent: "devin" })).toEqual([
+      DEFAULT_REASONING_EFFORT_ID,
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]);
+  });
+
   it("throws a typed error for unsupported agents", () => {
     expect(() => getAvailableReasoningEffortOptions({ agent: "not-real" })).toThrow(ModelAvailabilityError);
   });
