@@ -219,6 +219,13 @@ headless-core models init
 headless-core models inspect
 ```
 
+To run the CLI from a source checkout, build first and invoke `dist/cli.js` (the `headless-core` bin points to it):
+
+```sh
+npm run build                          # required: the bin entry points to dist/cli.js
+node dist/cli.js models inspect        # inspects all providers and prints JSON to stdout
+```
+
 ## Examples
 
 - [example/README.md](./example/README.md): Minimal chat UI with a model selector

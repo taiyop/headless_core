@@ -219,6 +219,13 @@ headless-core models init
 headless-core models inspect
 ```
 
+ソースチェックアウトから実行する場合は、先にビルドして `dist/cli.js` を直接呼びます(`headless-core` bin はここを指します):
+
+```sh
+npm run build                          # bin は dist/cli.js を指すので先にビルド必須
+node dist/cli.js models inspect        # 全プロバイダーを inspect して JSON を stdout に出力
+```
+
 ## Examples
 
 - [example/README.md](./example/README.md): model selector 付きの最小チャット UI
