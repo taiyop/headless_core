@@ -14,12 +14,13 @@
           <p>models.jsonから利用可能なmodelだけを読み込む最小チャットです。</p>
         </div>
         <div class="actions">
+          <button id="new-chat" type="button">New chat</button>
           <button id="reload" type="button">Reload models</button>
           <button id="inspect" type="button">Run inspect</button>
         </div>
       </section>
 
-      <section class="controls" aria-label="Models source, agent, model, and reasoning effort selection">
+      <section class="controls" aria-label="Models source, agent, transport, model, and reasoning effort selection">
         <label>
           Models source
           <select id="models-source">
@@ -32,6 +33,10 @@
           <select id="agent"></select>
         </label>
         <label>
+          Transport
+          <select id="transport"></select>
+        </label>
+        <label>
           Model
           <select id="model"></select>
         </label>
@@ -41,7 +46,10 @@
         </label>
       </section>
 
-      <section id="status" class="status"></section>
+      <section class="status-line">
+        <span id="status" class="status"></span>
+        <span id="elapsed" class="elapsed"></span>
+      </section>
       <section class="inspect-panel" aria-label="Inspect output">
         <div class="inspect-title">
           <span>Inspect output</span>

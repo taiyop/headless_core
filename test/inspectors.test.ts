@@ -30,6 +30,16 @@ describe("parseAgyModels", () => {
       "Claude Opus 4.6 (Thinking)"
     ]);
   });
+
+  it("takes the id column from id<TAB>name listings", () => {
+    expect(
+      parseAgyModels(
+        "Fetching available models...\n" +
+          "gemini-3-8-flash-low\tGemini 3.8 Flash (Low)\n" +
+          "gemini-3-8-flash-high\tGemini 3.8 Flash (High)\n"
+      )
+    ).toEqual(["gemini-3-8-flash-low", "gemini-3-8-flash-high"]);
+  });
 });
 
 describe("parseDevinModels", () => {

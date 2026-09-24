@@ -2,7 +2,13 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHeadlessCore, DEFAULT_MODEL_ID, DEFAULT_REASONING_EFFORT_ID, type ProgressEvent } from "../src/index.js";
+import {
+  createHeadlessCore,
+  DEFAULT_MODEL_ID,
+  DEFAULT_REASONING_EFFORT_ID,
+  EffortError,
+  type ProgressEvent
+} from "../src/index.js";
 
 let tmpDir: string;
 
@@ -471,6 +477,299 @@ describe("createHeadlessCore", () => {
     });
 
     expect(output).toBe("fallback ok");
+  });
+
+  describe("reasoning effort", () => {
+    // A codex CLI that answers `debug models` with a capability catalog and
+    // echoes argv otherwise.
+    async function fakeCodexWithCatalog(): Promise<string> {
+      return writeExecutable(
+        "fake-codex-catalog.mjs",
+        [
+          "#!/usr/bin/env node",
+          "const args = process.argv.slice(2);",
+          'if (args[0] === "debug" && args[1] === "models") {',
+          "  process.stdout.write(JSON.stringify({ models: [",
+          '    { slug: "gpt-5.5", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "high" }, { effort: "xhigh" }] },',
+          '    { slug: "gpt-6", supported_reasoning_levels: [{ effort: "none" }, { effort: "minimal" }, { effort: "low" }, { effort: "max" }] }',
+          "  ] }));",
+          "} else {",
+          "  process.stdout.write(JSON.stringify(args));",
+          "}"
+        ].join("\n")
+      );
+    }
+
+    it("maps codex none to model_reasoning_effort on a model that supports it", async () => {
+      const bin = await fakeCodexWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
+
+      const output = await headless.run({
+        agent: { provider: "codex", model: "gpt-6", reasoningEffort: "none" },
+        prompt: "hello"
+      });
+
+      expect(JSON.parse(output)).toContain('model_reasoning_effort="none"');
+    });
+
+    it("maps codex minimal to model_reasoning_effort on a model that supports it", async () => {
+      const bin = await fakeCodexWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
+
+      const output = await headless.run({
+        agent: { provider: "codex", model: "gpt-6", reasoningEffort: "minimal" },
+        prompt: "hello"
+      });
+
+      expect(JSON.parse(output)).toContain('model_reasoning_effort="minimal"');
+    });
+
+    it("rejects codex none on a model without it, listing supported efforts", async () => {
+      const bin = await fakeCodexWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
+
+      const failure = await headless
+        .run({
+          agent: { provider: "codex", model: "gpt-5.5", reasoningEffort: "none" },
+          prompt: "hello"
+        })
+        .catch((cause) => cause);
+
+      expect(failure).toBeInstanceOf(EffortError);
+      expect(failure.code).toBe("UNSUPPORTED_EFFORT");
+      expect(failure.message).toContain('does not support reasoning effort "none"');
+      expect(failure.message).toContain("low, medium, high, xhigh");
+      expect(failure.supportedEfforts).toEqual(["low", "medium", "high", "xhigh"]);
+    });
+
+    it("rejects an invalid effort string before contacting the provider", async () => {
+      const bin = await writeExecutable(
+        "fake-codex-invalid-effort.mjs",
+        ["#!/usr/bin/env node", "process.stdout.write(JSON.stringify(process.argv.slice(2)));"].join("\n")
+      );
+      const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
+
+      const failure = await headless
+        .run({
+          agent: { provider: "codex", model: "gpt-5.5", reasoningEffort: "banana" },
+          prompt: "hello"
+        })
+        .catch((cause) => cause);
+
+      expect(failure).toBeInstanceOf(EffortError);
+      expect(failure.code).toBe("INVALID_EFFORT");
+      expect(failure.message).toContain('Unknown reasoning effort "banana"');
+    });
+
+    it("treats omitted effort and explicit default identically", async () => {
+      const bin = await writeExecutable(
+        "fake-codex-default-equivalence.mjs",
+        ["#!/usr/bin/env node", "process.stdout.write(JSON.stringify(process.argv.slice(2)));"].join("\n")
+      );
+      const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
+
+      const omitted = JSON.parse(
+        await headless.run({ agent: { provider: "codex", model: "gpt-5.5" }, prompt: "hello" })
+      ) as string[];
+      const explicit = JSON.parse(
+        await headless.run({
+          agent: { provider: "codex", model: "gpt-5.5", reasoningEffort: "default" },
+          prompt: "hello"
+        })
+      ) as string[];
+
+      expect(explicit).toEqual(omitted);
+      expect(omitted.join(" ")).not.toContain("model_reasoning_effort");
+    });
+
+    // An agy CLI that answers `models` with an id<TAB>name listing.
+    async function fakeAgyWithCatalog(): Promise<string> {
+      return writeExecutable(
+        "fake-agy-catalog.mjs",
+        [
+          "#!/usr/bin/env node",
+          "const args = process.argv.slice(2);",
+          'if (args[0] === "models") {',
+          "  process.stdout.write([",
+          '    "Fetching available models...",',
+          '    "gemini-3-8-flash-minimal\\tGemini 3.8 Flash (Minimal)",',
+          '    "gemini-3-8-flash-low\\tGemini 3.8 Flash (Low)",',
+          '    "gemini-3-8-flash-medium\\tGemini 3.8 Flash (Medium)",',
+          '    "gemini-3-8-flash-high\\tGemini 3.8 Flash (High)",',
+          '    "gemini-2-5-flash-none\\tGemini 2.5 Flash (No Thinking)",',
+          '    "gemini-2-5-flash-low\\tGemini 2.5 Flash (Low)",',
+          '    "gemini-2-5-flash-medium\\tGemini 2.5 Flash (Medium)",',
+          '    "gemini-2-5-flash-high\\tGemini 2.5 Flash (High)",',
+          '    "gemini-2-5-pro-low\\tGemini 2.5 Pro (Low)",',
+          '    "gemini-2-5-pro-medium\\tGemini 2.5 Pro (Medium)",',
+          '    "gemini-2-5-pro-high\\tGemini 2.5 Pro (High)"',
+          "  ].join(\"\\n\"));",
+          "} else {",
+          "  process.stdout.write(JSON.stringify(args));",
+          "}"
+        ].join("\n")
+      );
+    }
+
+    it("maps agy minimal to the advertised minimal variant id", async () => {
+      const bin = await fakeAgyWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, AGY_BIN: bin } });
+
+      const output = (JSON.parse(
+        await headless.run({
+          agent: { provider: "agy", model: "gemini-3-8-flash", reasoningEffort: "minimal" },
+          prompt: "hello"
+        })
+      ) as string[]).join(" ");
+
+      expect(output).toContain("--model gemini-3-8-flash-minimal");
+      expect(output).not.toContain("--effort");
+    });
+
+    it("maps agy none to an advertised non-thinking variant only", async () => {
+      const bin = await fakeAgyWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, AGY_BIN: bin } });
+
+      const output = (JSON.parse(
+        await headless.run({
+          agent: { provider: "agy", model: "gemini-2-5-flash", reasoningEffort: "none" },
+          prompt: "hello"
+        })
+      ) as string[]).join(" ");
+
+      expect(output).toContain("--model gemini-2-5-flash-none");
+      expect(output).not.toContain("--effort");
+    });
+
+    it("rejects agy none when the model family cannot disable thinking", async () => {
+      const bin = await fakeAgyWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, AGY_BIN: bin } });
+
+      const failure = await headless
+        .run({
+          agent: { provider: "agy", model: "gemini-2-5-pro", reasoningEffort: "none" },
+          prompt: "hello"
+        })
+        .catch((cause) => cause);
+
+      expect(failure).toBeInstanceOf(EffortError);
+      expect(failure.code).toBe("UNSUPPORTED_EFFORT");
+      expect(failure.supportedEfforts).not.toContain("none");
+      expect(failure.supportedEfforts).toEqual(expect.arrayContaining(["low", "medium", "high"]));
+    });
+
+    it("rejects agy none for gemini-3.x without a non-thinking variant", async () => {
+      const bin = await fakeAgyWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, AGY_BIN: bin } });
+
+      const failure = await headless
+        .run({
+          agent: { provider: "agy", model: "gemini-3-8-flash", reasoningEffort: "none" },
+          prompt: "hello"
+        })
+        .catch((cause) => cause);
+
+      expect(failure).toBeInstanceOf(EffortError);
+      expect(failure.code).toBe("UNSUPPORTED_EFFORT");
+      expect(failure.message).not.toContain("gemini-3-8-flash-none");
+    });
+
+    it("prefers the advertised level variant over the agy --effort flag", async () => {
+      const bin = await fakeAgyWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, AGY_BIN: bin } });
+
+      const output = (JSON.parse(
+        await headless.run({
+          agent: { provider: "agy", model: "gemini-2-5-pro", reasoningEffort: "low" },
+          prompt: "hello"
+        })
+      ) as string[]).join(" ");
+
+      // The gemini-2-5-pro-low variant carries the level.
+      expect(output).toContain("--model gemini-2-5-pro-low");
+      expect(output).not.toContain("--effort");
+    });
+
+    it("uses the agy --effort flag when the model has no level variants", async () => {
+      const bin = await fakeAgyWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, AGY_BIN: bin } });
+
+      const output = (JSON.parse(
+        await headless.run({
+          agent: { provider: "agy", model: "m-plain", reasoningEffort: "low" },
+          prompt: "hello"
+        })
+      ) as string[]).join(" ");
+
+      expect(output).toContain("--model m-plain");
+      expect(output).toContain("--effort low");
+    });
+
+    // A devin CLI that answers `models list --format json` with variants.
+    async function fakeDevinWithCatalog(): Promise<string> {
+      return writeExecutable(
+        "fake-devin-catalog.mjs",
+        [
+          "#!/usr/bin/env node",
+          "const args = process.argv.slice(2);",
+          'if (args[0] === "models" && args[1] === "list") {',
+          "  process.stdout.write(JSON.stringify({ families: [",
+          '    { slug: "swe-2", variants: [{ model_uid: "swe-2-high" }] },',
+          '    { slug: "claude-opus-5", variants: [{ model_uid: "claude-opus-5-medium" }, { model_uid: "claude-opus-5-high" }] },',
+          '    { slug: "gpt-5.4", variants: [{ model_uid: "gpt-5-4-low" }, { model_uid: "gpt-5-4-none" }] }',
+          "  ] }));",
+          "} else {",
+          "  process.stdout.write(JSON.stringify(args));",
+          "}"
+        ].join("\n")
+      );
+    }
+
+    it("maps devin none to an advertised non-reasoning variant uid", async () => {
+      const bin = await fakeDevinWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, DEVIN_BIN: bin } });
+
+      const output = (JSON.parse(
+        await headless.run({
+          agent: { provider: "devin", model: "gpt-5.4", reasoningEffort: "none" },
+          prompt: "hello"
+        })
+      ) as string[]).join(" ");
+
+      expect(output).toContain("--model gpt-5-4-none");
+    });
+
+    it("rejects devin none when the family has no non-reasoning variant", async () => {
+      const bin = await fakeDevinWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, DEVIN_BIN: bin } });
+
+      const failure = await headless
+        .run({
+          agent: { provider: "devin", model: "swe-2", reasoningEffort: "none" },
+          prompt: "hello"
+        })
+        .catch((cause) => cause);
+
+      expect(failure).toBeInstanceOf(EffortError);
+      expect(failure.code).toBe("UNSUPPORTED_EFFORT");
+      expect(failure.message).not.toContain("swe-2-none");
+    });
+
+    it("rejects a devin level the family does not advertise instead of converting", async () => {
+      const bin = await fakeDevinWithCatalog();
+      const headless = createHeadlessCore({ env: { ...process.env, DEVIN_BIN: bin } });
+
+      const failure = await headless
+        .run({
+          agent: { provider: "devin", model: "swe-2", reasoningEffort: "low" },
+          prompt: "hello"
+        })
+        .catch((cause) => cause);
+
+      expect(failure).toBeInstanceOf(EffortError);
+      expect(failure.code).toBe("UNSUPPORTED_EFFORT");
+      expect(failure.supportedEfforts).toContain("high");
+    });
   });
 });
 

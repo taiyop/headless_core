@@ -100,13 +100,16 @@ describe("getAvailableModels", () => {
 });
 
 describe("getAvailableReasoningEffortOptions", () => {
-  it("returns reasoning effort choices for codex", () => {
+  it("returns the full effort vocabulary for codex", () => {
     expect(getAvailableReasoningEffortOptions({ agent: "codex" })).toEqual([
       DEFAULT_REASONING_EFFORT_ID,
+      "none",
+      "minimal",
       "low",
       "medium",
       "high",
-      "xhigh"
+      "xhigh",
+      "max"
     ]);
   });
 
@@ -130,9 +133,24 @@ describe("getAvailableReasoningEffortOptions", () => {
     ]);
   });
 
-  it("returns effort choices for devin folded into the model uid", () => {
+  it("returns the full effort vocabulary for agy variant ids", () => {
+    expect(getAvailableReasoningEffortOptions({ agent: "agy" })).toEqual([
+      DEFAULT_REASONING_EFFORT_ID,
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]);
+  });
+
+  it("returns the full effort vocabulary for devin variant uids", () => {
     expect(getAvailableReasoningEffortOptions({ agent: "devin" })).toEqual([
       DEFAULT_REASONING_EFFORT_ID,
+      "none",
+      "minimal",
       "low",
       "medium",
       "high",

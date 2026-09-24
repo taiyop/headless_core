@@ -25,8 +25,20 @@ const localModelsPath = envModelsPath ?? path.join(__dirname, "models.json");
 const sharedModelsPath = path.join(homedir(), ".config", "headless-core", "models.json");
 
 const agents = ["codex", "claude", "agy", "grok", "devin"];
+// Persistent transports per provider (see "Persistent sessions" in the main
+// README): codex app-server and devin acp keep one process alive across runs.
+const transportsByAgent = {
+  codex: ["cli", "app-server"],
+  devin: ["cli", "acp"]
+};
 const exampleBinDir = path.join(__dirname, "bin");
 let inspectedModelsByAgent = null;
+// key: `${agent}:${transport}` -> Promise<{ session, hasHistory }>. The promise
+// is stored so concurrent first sends share one createSession call.
+const sessions = new Map();
+// Models reported by live sessions (session.getAvailableModels()), keyed by
+// agent. Merged into the config-file list so runtime-only ids stay selectable.
+const runtimeModelsByAgent = new Map();
 const headless = createHeadlessCore({
   timeoutMs: 120_000
 });
@@ -59,10 +71,14 @@ const server = createServer(async (req, res) => {
       return json(res, 200, result);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/session/reset") {
+      const body = await readJson(req);
+      return json(res, 200, await resetSession(body));
+    }
+
     if (req.method === "POST" && url.pathname === "/api/chat") {
       const body = await readJson(req);
-      const reply = await runChat(body);
-      return json(res, 200, { reply });
+      return json(res, 200, await runChat(body));
     }
 
     return json(res, 404, { error: "Not found" });
@@ -89,17 +105,40 @@ server.on("listening", () => {
 
 server.listen(port, host);
 
+// Close persistent sessions so app-server/acp child processes exit with us.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    void shutdownSessions().finally(() => process.exit(0));
+  });
+}
+
+async function shutdownSessions() {
+  const pending = [...sessions.values()];
+  sessions.clear();
+  const entries = await Promise.all(pending.map((entry) => entry.catch(() => undefined)));
+  await Promise.all(
+    entries.filter(Boolean).map((entry) => entry.session.close().catch(() => undefined))
+  );
+  await headless.shutdown().catch(() => undefined);
+}
+
 async function loadModelsByAgent() {
   const result = {};
   for (const agent of agents) {
     const reasoningEffortOptions = getAvailableReasoningEffortOptions({ agent });
+    const transports = transportsByAgent[agent] ?? ["cli"];
     try {
-      result[agent] = { models: await getAvailableModels({ agent }), reasoningEffortOptions };
+      result[agent] = {
+        models: mergeRuntimeModels(agent, await getAvailableModels({ agent })),
+        reasoningEffortOptions,
+        transports
+      };
     } catch (error) {
       const inspectedModels = inspectedModelsByAgent?.[agent];
       result[agent] = {
-        models: inspectedModels ?? [],
+        models: mergeRuntimeModels(agent, inspectedModels ?? []),
         reasoningEffortOptions,
+        transports,
         ...(inspectedModels ? { source: "inspect" } : { error: serializeError(error).error })
       };
     }
@@ -109,6 +148,7 @@ async function loadModelsByAgent() {
 
 async function runChat(body) {
   const agent = asString(body.agent);
+  const transport = asString(body.transport) || "cli";
   const model = asString(body.model);
   const rawReasoningEffort = asString(body.reasoningEffort);
   const reasoningEffort = rawReasoningEffort === DEFAULT_REASONING_EFFORT_ID ? "" : rawReasoningEffort;
@@ -117,13 +157,16 @@ async function runChat(body) {
   if (!agents.includes(agent)) {
     throw new Error(`Unsupported agent: ${agent}`);
   }
+  const supportedTransports = transportsByAgent[agent] ?? ["cli"];
+  if (!supportedTransports.includes(transport)) {
+    throw new Error(`Unsupported transport for ${agent}: ${transport} (supported: ${supportedTransports.join(", ")})`);
+  }
   if (!model) {
     throw new Error("Model is required");
   }
-  const reasoningEffortOptions = getAvailableReasoningEffortOptions({ agent });
-  if (reasoningEffort && !reasoningEffortOptions.includes(reasoningEffort)) {
-    throw new Error(`Unsupported reasoning effort: ${reasoningEffort}`);
-  }
+  // Effort values are validated by the library with detailed per-model
+  // errors (EffortError INVALID_EFFORT / UNSUPPORTED_EFFORT), which are
+  // surfaced to the UI as the chat error.
 
   applyModelsSource(asString(body.source));
   const availableModels = await getAvailableModelsForChat(agent);
@@ -131,8 +174,12 @@ async function runChat(body) {
     throw new Error(`Model "${model}" is not available for ${agent}`);
   }
 
+  if (transport !== "cli") {
+    return runSessionChat({ agent, transport, model, reasoningEffort, messages });
+  }
+
   const prompt = buildPrompt(messages);
-  return headless.run({
+  const reply = await headless.run({
     agent: {
       provider: agent,
       model,
@@ -140,6 +187,111 @@ async function runChat(body) {
     },
     prompt
   });
+  return { reply };
+}
+
+/**
+ * One-shot chat over a persistent transport. Sessions are kept per
+ * agent+transport so the remote conversation continues across messages: the
+ * first turn of a new session carries the transcript for context, later turns
+ * send only the latest user message.
+ */
+async function runSessionChat({ agent, transport, model, reasoningEffort, messages }) {
+  const key = `${agent}:${transport}`;
+  let entryPromise = sessions.get(key);
+  let created = false;
+  if (!entryPromise) {
+    created = true;
+    entryPromise = headless
+      .createSession({
+        agent: {
+          provider: agent,
+          transport,
+          model,
+          ...(reasoningEffort ? { reasoningEffort } : {})
+        }
+      })
+      .then((session) => ({ session, hasHistory: false }));
+    sessions.set(key, entryPromise);
+    // Failed startups must not poison later sends.
+    entryPromise.catch(() => {
+      if (sessions.get(key) === entryPromise) {
+        sessions.delete(key);
+      }
+    });
+  }
+  const entry = await entryPromise;
+  if (!created) {
+    // Applies from the next turn without restarting the runtime. "" restores
+    // the provider default effort.
+    await entry.session.setModel(model, reasoningEffort);
+  }
+
+  const prompt = entry.hasHistory ? latestUserMessage(messages) : buildPrompt(messages);
+  // Mark before running so a concurrent send on a fresh session does not also
+  // transmit the full transcript.
+  entry.hasHistory = true;
+  try {
+    const reply = await entry.session.run({ prompt });
+    const models = await sessionModelIds(entry.session);
+    if (models.length > 0) {
+      runtimeModelsByAgent.set(agent, models);
+    }
+    return { reply, sessionId: entry.session.id, models };
+  } catch (error) {
+    // A failed turn may leave the runtime dead; drop the session so the next
+    // message starts a fresh conversation.
+    if (sessions.get(key) === entryPromise) {
+      sessions.delete(key);
+    }
+    await entry.session.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function resetSession(body) {
+  const agent = asString(body.agent);
+  const transport = asString(body.transport) || "cli";
+  const key = `${agent}:${transport}`;
+  const entryPromise = sessions.get(key);
+  const entry = await entryPromise?.catch(() => undefined);
+  if (!entry) {
+    return { reset: false };
+  }
+  try {
+    await entry.session.reset();
+    entry.hasHistory = false;
+    return { reset: true, sessionId: entry.session.id };
+  } catch (error) {
+    if (sessions.get(key) === entryPromise) {
+      sessions.delete(key);
+    }
+    await entry.session.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function sessionModelIds(session) {
+  try {
+    const candidates = await session.getAvailableModels();
+    return candidates.map((candidate) => candidate.id).filter((id) => typeof id === "string" && id);
+  } catch {
+    return [];
+  }
+}
+
+function latestUserMessage(messages) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      return asString(messages[index].content);
+    }
+  }
+  return "";
+}
+
+function mergeRuntimeModels(agent, models) {
+  const runtimeModels = runtimeModelsByAgent.get(agent) ?? [];
+  return [...models, ...runtimeModels.filter((model) => !models.includes(model))];
 }
 
 async function runInspect(source) {
@@ -160,9 +312,9 @@ async function runInspect(source) {
 
 async function getAvailableModelsForChat(agent) {
   try {
-    return await getAvailableModels({ agent });
+    return mergeRuntimeModels(agent, await getAvailableModels({ agent }));
   } catch (error) {
-    return withDefaultModel(inspectedModelsByAgent?.[agent] ?? []);
+    return mergeRuntimeModels(agent, withDefaultModel(inspectedModelsByAgent?.[agent] ?? []));
   }
 }
 
@@ -188,8 +340,9 @@ function toAgentsResponse(models, source) {
   const result = {};
   for (const agent of agents) {
     result[agent] = {
-      models: withDefaultModel(models[agent] ?? []),
+      models: mergeRuntimeModels(agent, withDefaultModel(models[agent] ?? [])),
       reasoningEffortOptions: getAvailableReasoningEffortOptions({ agent }),
+      transports: transportsByAgent[agent] ?? ["cli"],
       source
     };
   }

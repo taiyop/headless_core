@@ -141,6 +141,108 @@ import { getAvailableReasoningEffortOptions } from "@headless-core/core";
 const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 ```
 
+### `headless.createSession(options)`
+
+```ts
+const session = await headless.createSession({
+  agent: { provider: "codex", transport: "app-server", model: "default" }
+});
+```
+
+### `headless.shutdown()`
+
+Closes all sessions and terminates every persistent agent process owned by this core.
+
+## Persistent sessions
+
+`run()` spawns a fresh CLI process per call (transport `cli`, the default). For lower latency and conversation continuity, `createSession()` keeps a persistent agent process alive and reuses it across `session.run()` calls:
+
+| provider | `transport` | persistent process |
+| --- | --- | --- |
+| `codex` | `app-server` | `codex app-server` (JSON-RPC over stdio) |
+| `devin` | `acp` | `devin acp` (Agent Client Protocol over stdio) |
+| any | `cli` (default) | one-shot spawn per `run()` |
+
+Sessions that share the same provider/transport/binary share one OS process; each session owns its own conversation (a codex thread or an ACP session). Concurrent `run()` calls on the same session are serialized; different sessions run in parallel. The process exits when the last session closes.
+
+```ts
+const session = await headless.createSession({
+  agent: { provider: "codex", transport: "app-server" }
+});
+
+await session.run({
+  prompt: "Hello",
+  onProgress(event) {
+    console.log(event.state, event.partialOutput);
+  }
+});
+await session.run({ prompt: "Follow-up on the same thread" });
+
+// New conversation, same process:
+await session.reset();
+
+// Dynamic model list / switching without restarting the process:
+const models = await session.getAvailableModels();
+await session.setModel("MODEL_ID", "low");
+
+await session.close();
+
+// Devin uses the same API over ACP:
+const devin = await headless.createSession({
+  agent: { provider: "devin", transport: "acp" }
+});
+await devin.run({ prompt: "Hello" });
+await devin.close();
+
+// Kill every persistent process owned by this core:
+await headless.shutdown();
+```
+
+`session.run()` accepts `prompt`, `signal` (`AbortSignal`), `timeoutMs`, and `onProgress` — the same progress events as `headless.run()`. Abort and timeout cancel the remote turn (`turn/interrupt` / `session/cancel`), so the session stays reusable. The headless permission posture matches the CLI path: codex threads run with `sandbox: "read-only"` and `approvalPolicy: "never"` (approval requests are declined automatically), and devin sessions select the answer-only `ask` mode with permission requests denied by default.
+
+For devin ACP sessions the `model` config option advertises variant uids that embed the thinking level (`swe-2-high`, `claude-opus-5-5-medium`), while `models.json` typically holds family slugs (`swe-2`, `claude-opus-5.5`). `setModel()`/session creation resolve them in this order: the effort-folded uid (`claude-opus-5.5` + `high` -> `claude-opus-5-5-high`), the exact or dashed id, then the family's only advertised variant (`swe-2` -> `swe-2-high`, `gpt-6-astra` -> `gpt-6-astra-medium`). Any remaining effort is applied via the `thought_level` config option when the session offers it. Passing `default` restores the model/thought level the session started with.
+
+## Reasoning effort
+
+`agent.reasoningEffort` accepts a shared vocabulary across providers:
+
+```ts
+type Effort = "default" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+```
+
+The values are **not** interchangeable aliases:
+
+- `default` — do not send an explicit effort; the provider/CLI/model default applies. Omitting `reasoningEffort` behaves identically.
+- `none` — fully disable reasoning/thinking. Distinct from `minimal`; it is only honored when the model exposes a real off switch (an advertised `none` level or a non-thinking variant). It is never silently converted to `minimal`/`low`.
+- `minimal` — the smallest level that still runs reasoning, not "off".
+- `low`/`medium`/`high`/`xhigh`/`max` — increasing effort as supported.
+
+Each adapter maps a level to the provider's native mechanism and validates it against model capabilities **before** the request is sent (capability data comes from the runtime where available — `codex debug models`, the app-server `model/list`, `devin models list`, ACP config options, `agy models`). Unsupported values raise an `EffortError`:
+
+- `INVALID_EFFORT` — the value is outside the vocabulary (e.g. `"banana"`).
+- `UNSUPPORTED_EFFORT` — valid value, but the selected model cannot express it. The error message lists the model's supported efforts; no implicit fallback is applied.
+
+Per-provider mapping:
+
+| provider | mechanism | notes |
+| --- | --- | --- |
+| Codex | `model_reasoning_effort` (CLI `-c` / app-server `turn/start` `effort`) | Levels pass through verbatim. Per-model support is enforced from `supported_reasoning_levels` / `supportedReasoningEfforts`. `default` omits the parameter |
+| Claude Code | `--effort` | Accepts `low`, `medium`, `high`, `xhigh`, `max` |
+| Grok | `--effort` | Accepts `low`, `medium`, `high` |
+| Agy (Gemini-family) | level-embedded variant ids (`--model gemini-3-8-flash-low`) or `--effort` | A variant carrying the requested level wins; `none` maps only to an explicit non-thinking variant (`gemini-2-5-flash-none`), never to `minimal`; remaining in-range levels use `--effort low|medium|high` |
+| Devin | variant uids (`--model <model>-<level>`) or ACP `thought_level` | `none` maps only to an explicit non-reasoning variant (`gpt-5-4-none`, or the family's level-less sibling among thinking variants) — never to a mechanical `<model>-none`. Other levels must match an advertised variant or `thought_level` |
+
+When capability data cannot be fetched, codex/agy degrade to provider-side validation; devin `none` is always rejected without a catalog since only an advertised variant may carry it.
+
+### Transport-specific capabilities (devin)
+
+Devin capabilities are read per transport, and they do not always agree:
+
+- `cli` — `devin models list` advertises every variant uid, including non-thinking variants (`gpt-6-luna-none`, `gpt-5-4-none`).
+- `acp` — the session's `model` config option advertises a **curated subset** (e.g. only `gpt-6-luna-medium`), and `session/set_config_option` rejects values outside that list (`Invalid value ... for config option 'model'`).
+
+So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` + `none` resolves to `gpt-6-luna-none` on `cli`, but on `acp` it fails with `UNSUPPORTED_EFFORT` because the session never offered that variant. `supportedEfforts` in the error always reflects the selected transport's actual options.
+
 ## Options
 
 ### `createHeadlessCore`
@@ -156,8 +258,9 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | option | description |
 | --- | --- |
 | `agent.provider` | `codex`, `claude`, `grok`, `agy`, `devin` |
+| `agent.transport` | `cli` (default), `app-server` (codex), `acp` (devin). See Persistent sessions |
 | `agent.model` | Model ID passed to the provider. If `default`, `--model` is not passed |
-| `agent.reasoningEffort` | Reasoning effort passed to the provider. If `default`, it is not passed |
+| `agent.reasoningEffort` | Shared effort vocabulary (`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). `default`/omitted sends no effort; unsupported values raise `EffortError`. See Reasoning effort |
 | `prompt` | Instructions passed to the Agent CLI |
 | `onProgress` | Callback for state changes and intermediate output |
 | `onFallback` | Fallback callback on failure |
@@ -171,8 +274,8 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | Codex | `codex` or `CODEX_BIN` | `--model` | `--config model_reasoning_effort="..."` |
 | Claude Code | `claude` or `CLAUDE_BIN` | `--model` | `--effort` |
 | Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
-| Agy | `agy` or `AGY_BIN` | `--model` | Not supported |
-| Devin | `devin` or `DEVIN_BIN` | `--model` | Folded into the model uid: `model` + effort becomes `--model <model>-<effort>` (e.g. `claude-opus-5` + `high` -> `claude-opus-5-high`). Requires an explicit model; not every family supports every level |
+| Agy | `agy` or `AGY_BIN` | `--model` | Level-embedded variant ids win (`gemini-3-8-flash-low`); otherwise `--effort low|medium|high`. `none` requires an advertised non-thinking variant |
+| Devin | `devin` or `DEVIN_BIN` | `--model` | Folded into the model uid: `model` + effort becomes `--model <model>-<effort>` (e.g. `claude-opus-5` + `high` -> `claude-opus-5-high`). Requires an explicit model; only advertised variants are used — `none` maps to an explicit non-reasoning variant or fails |
 
 ### Headless tool / permission notes
 
@@ -242,7 +345,7 @@ node dist/cli.js models inspect        # inspects all providers and prints JSON 
 
 ## Limitations
 
-- Does not include conversation history management, database persistence, or a Web API server
+- Does not include database persistence or a Web API server; session conversations live only inside the running agent process and are dropped on `reset()`/`close()`/process exit
 - Automatic retries are not performed. Implement in `onFallback` if needed
 - Provider-specific authentication, billing, and rate limits depend on the settings of each CLI
 - The Agent CLI may read and write local files

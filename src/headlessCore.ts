@@ -1,20 +1,44 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { resolveAgyEffort } from "./agyModel.js";
+import { CliSession } from "./cliSession.js";
+import {
+  CodexAppServerRuntime,
+  CodexAppServerSession,
+  codexAppServerRuntimeKey
+} from "./codexAppServer.js";
+import { DevinAcpRuntime, DevinAcpSession, devinAcpRuntimeKey } from "./devinAcp.js";
+import { devinModelWithEffort, resolveDevinModel } from "./devinModel.js";
+import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
+import { EffortError } from "./errors.js";
+import { agyModelIds, codexModelEffortLevels, devinModelVariantUids } from "./modelCatalog.js";
+import {
+  RuntimeManager,
+  resolveTransport,
+  validateTransport,
+  type SessionContext
+} from "./runtimeManager.js";
 import {
   AGENT_IDS,
   DEFAULT_MODEL_ID,
-  DEFAULT_REASONING_EFFORT_ID,
   type AgentSpec,
+  type CreateSessionOptions,
+  type EffortLevel,
   type FallbackResult,
   type HeadlessCore,
   type HeadlessCoreConfig,
   type HeadlessError,
   type HeadlessRunOptions,
+  type HeadlessSession,
   type ProgressEvent,
   type ProgressSnapshot
 } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+
+/** Effort levels each provider's own effort flag accepts. */
+const CLAUDE_SUPPORTED_EFFORTS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+const GROK_SUPPORTED_EFFORTS: readonly EffortLevel[] = ["low", "medium", "high"];
 
 type CommandSpec = {
   command: string;
@@ -28,14 +52,54 @@ type RunFailure = {
 };
 
 export function createHeadlessCore(config: HeadlessCoreConfig = {}): HeadlessCore {
+  const manager = new RuntimeManager();
+  const contextFor = (): SessionContext => ({
+    cwd: config.cwd ?? process.cwd(),
+    env: config.env ?? process.env,
+    timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    manager
+  });
+
   return {
     async run(options) {
-      return runWithFallback(config, options);
+      return runWithFallback(contextFor(), options);
+    },
+    async createSession(options) {
+      return createSession(contextFor(), options);
+    },
+    async shutdown() {
+      await manager.shutdown();
     }
   };
 }
 
-async function runWithFallback(config: HeadlessCoreConfig, options: HeadlessRunOptions): Promise<string> {
+async function createSession(ctx: SessionContext, options: CreateSessionOptions): Promise<HeadlessSession> {
+  const agent = options.agent;
+  if (!agent || !agent.provider?.trim()) {
+    throw new Error("agent.provider is required");
+  }
+  if (!(AGENT_IDS as readonly string[]).includes(agent.provider)) {
+    throw new Error(`Unsupported provider: ${agent.provider}`);
+  }
+  const transport = resolveTransport(agent);
+  validateTransport(agent.provider, transport);
+
+  if (transport === "app-server") {
+    const key = codexAppServerRuntimeKey(ctx.env);
+    const runtime = await ctx.manager.acquire(key, () => CodexAppServerRuntime.start(ctx));
+    return CodexAppServerSession.create(runtime, ctx, agent, () => ctx.manager.release(key, runtime));
+  }
+
+  if (transport === "acp") {
+    const key = devinAcpRuntimeKey(ctx.env);
+    const runtime = await ctx.manager.acquire(key, () => DevinAcpRuntime.start(ctx));
+    return DevinAcpSession.create(runtime, ctx, agent, () => ctx.manager.release(key, runtime));
+  }
+
+  return new CliSession(agent, (runOptions) => runOnce(ctx, runOptions));
+}
+
+async function runWithFallback(ctx: SessionContext, options: HeadlessRunOptions): Promise<string> {
   const runId = randomUUID();
   let prompt = options.prompt;
   let agent = options.agent;
@@ -43,8 +107,13 @@ async function runWithFallback(config: HeadlessCoreConfig, options: HeadlessRunO
 
   for (;;) {
     try {
-      return await runOnce(config, { ...options, agent, prompt });
+      return await runOnce(ctx, { ...options, agent, prompt });
     } catch (cause) {
+      // Effort validation failures are request errors, not provider run
+      // failures: surface them typed and never route them through fallback.
+      if (cause instanceof EffortError) {
+        throw cause;
+      }
       const failure = toRunFailure(cause);
       const progress = createProgressSnapshot(agent, failure);
       await emitProgress(options, {
@@ -88,14 +157,19 @@ async function runWithFallback(config: HeadlessCoreConfig, options: HeadlessRunO
   }
 }
 
-async function runOnce(config: HeadlessCoreConfig, options: HeadlessRunOptions): Promise<string> {
+async function runOnce(ctx: SessionContext, options: HeadlessRunOptions): Promise<string> {
   validateRunOptions(options);
-  const timeoutMs = options.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const { command, args } = commandFor(options.agent, options.prompt, config.env ?? process.env, timeoutMs);
+  const timeoutMs = options.timeoutMs ?? ctx.timeoutMs;
+
+  if (resolveTransport(options.agent) !== "cli") {
+    return runPersistentOnce(ctx, options, timeoutMs);
+  }
+
+  const { command, args } = await commandFor(options.agent, options.prompt, ctx.env, timeoutMs);
   await emitProgress(options, { state: "starting", agent: options.agent, message: `Starting ${options.agent.provider}` });
   const result = await runCommand(command, args, {
-    cwd: config.cwd ?? process.cwd(),
-    env: config.env ?? process.env,
+    cwd: ctx.cwd,
+    env: ctx.env,
     signal: options.signal,
     timeoutMs,
     onStdout: (partialOutput) => emitProgress(options, { state: "running", agent: options.agent, partialOutput }),
@@ -111,6 +185,25 @@ async function runOnce(config: HeadlessCoreConfig, options: HeadlessRunOptions):
   return (result.stdout || result.stderr).trim();
 }
 
+/** A one-shot run over a persistent transport: open a session, run, release. */
+async function runPersistentOnce(
+  ctx: SessionContext,
+  options: HeadlessRunOptions,
+  timeoutMs: number
+): Promise<string> {
+  const session = await createSession(ctx, { agent: options.agent });
+  try {
+    return await session.run({
+      prompt: options.prompt,
+      signal: options.signal,
+      timeoutMs,
+      onProgress: options.onProgress
+    });
+  } finally {
+    await session.close().catch(() => undefined);
+  }
+}
+
 function validateRunOptions(options: HeadlessRunOptions): void {
   if (!options.prompt.trim()) {
     throw new Error("prompt is required");
@@ -121,34 +214,19 @@ function validateRunOptions(options: HeadlessRunOptions): void {
   if (!(AGENT_IDS as readonly string[]).includes(options.agent.provider)) {
     throw new Error(`Unsupported provider: ${options.agent.provider}`);
   }
+  const transport = resolveTransport(options.agent);
+  validateTransport(options.agent.provider, transport);
+  const effort = parseRequestedEffort(options.agent.reasoningEffort);
   if (
+    transport === "cli" &&
     options.agent.provider === "devin" &&
-    options.agent.reasoningEffort &&
-    options.agent.reasoningEffort !== DEFAULT_REASONING_EFFORT_ID &&
+    effort &&
     (!options.agent.model || options.agent.model === DEFAULT_MODEL_ID)
   ) {
     throw new Error(
       'devin reasoningEffort requires an explicit agent.model (thinking levels are model variant suffixes, e.g. "claude-opus-5-high")'
     );
   }
-}
-
-/**
- * Devin has no separate effort flag: thinking levels are model uid suffixes
- * (e.g. claude-opus-5-high). Fold the effort into the model id by replacing an
- * existing level suffix (keeping -fast/-priority tails), or appending it to a
- * family slug. Dotted slugs use dashes in variant uids: gpt-5.6-sol ->
- * gpt-5-6-sol-high. Families without the requested level fail at run time.
- */
-function devinModelWithEffort(model: string | undefined, effort: string | undefined): string | undefined {
-  if (!model || model === DEFAULT_MODEL_ID || !effort) {
-    return model;
-  }
-  const levelSuffix = /-(none|minimal|low|medium|high|xhigh|max|thinking)(-(?:fast|priority))?$/;
-  if (levelSuffix.test(model)) {
-    return model.replace(levelSuffix, `-${effort}$2`);
-  }
-  return `${model.replace(/\./g, "-")}-${effort}`;
 }
 
 /** Format milliseconds as an Agy --print-timeout duration (e.g. 2m, 5m0s, 90s). */
@@ -165,13 +243,29 @@ function formatAgyPrintTimeout(timeoutMs: number): string {
   return `${minutes}m${seconds}s`;
 }
 
-function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv, timeoutMs: number): CommandSpec {
+async function commandFor(
+  agent: AgentSpec,
+  prompt: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number
+): Promise<CommandSpec> {
   const provider = agent.provider;
-  const modelArgs = agent.model && agent.model !== DEFAULT_MODEL_ID ? ["--model", agent.model] : [];
-  const reasoningEffort =
-    agent.reasoningEffort && agent.reasoningEffort !== DEFAULT_REASONING_EFFORT_ID ? agent.reasoningEffort : undefined;
+  const modelId = agent.model && agent.model !== DEFAULT_MODEL_ID ? agent.model : undefined;
+  const modelArgs = modelId ? ["--model", modelId] : [];
+  const effort = parseRequestedEffort(agent.reasoningEffort);
 
   if (provider === "codex") {
+    let codexEffort: string | undefined;
+    if (effort) {
+      // `codex debug models` advertises per-model supported levels. When the
+      // selected model's capabilities are known, enforce them before spawning
+      // the run; otherwise the provider remains the source of truth.
+      const levels = modelId ? (await codexModelEffortLevels(env))?.get(modelId) : undefined;
+      if (levels && !levels.includes(effort)) {
+        throw unsupportedEffort("codex", modelId, effort, levels);
+      }
+      codexEffort = effort;
+    }
     return {
       command: env.CODEX_BIN || "codex",
       args: [
@@ -179,7 +273,7 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv, ti
         ...modelArgs,
         "--config",
         'approval_policy="never"',
-        ...(reasoningEffort ? ["--config", `model_reasoning_effort="${reasoningEffort}"`] : []),
+        ...(codexEffort ? ["--config", `model_reasoning_effort="${codexEffort}"`] : []),
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",
@@ -191,6 +285,9 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv, ti
   }
 
   if (provider === "claude") {
+    if (effort && !CLAUDE_SUPPORTED_EFFORTS.includes(effort)) {
+      throw unsupportedEffort("claude", modelId, effort, CLAUDE_SUPPORTED_EFFORTS);
+    }
     return {
       command: env.CLAUDE_BIN || "claude",
       args: [
@@ -203,17 +300,18 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv, ti
         "--tools",
         "",
         ...modelArgs,
-        ...(reasoningEffort ? ["--effort", reasoningEffort] : []),
+        ...(effort ? ["--effort", effort] : []),
         prompt
       ]
     };
   }
 
   if (provider === "agy") {
+    const resolved = effort ? resolveAgyEffort(modelId, effort, await agyModelIds(env)) : { model: modelId };
     return {
       command: env.AGY_BIN || "agy",
       args: [
-        ...modelArgs,
+        ...(resolved.model ? ["--model", resolved.model] : []),
         // Non-interactive --print cannot answer tool permission prompts.
         // Auto-approve so agents can use tools that write files (e.g. image generation).
         "--dangerously-skip-permissions",
@@ -223,6 +321,7 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv, ti
         // Keep Agy's own wait aligned with this run's timeout.
         "--print-timeout",
         formatAgyPrintTimeout(timeoutMs),
+        ...(resolved.flagEffort ? ["--effort", resolved.flagEffort] : []),
         "--print",
         prompt
       ]
@@ -230,7 +329,24 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv, ti
   }
 
   if (provider === "devin") {
-    const devinModel = devinModelWithEffort(agent.model, reasoningEffort);
+    let devinModel = modelId;
+    if (modelId && effort) {
+      const uids = await devinModelVariantUids(env);
+      if (uids) {
+        // The variant catalog is known: the requested effort must map to an
+        // advertised variant (or a non-thinking variant for "none") — never
+        // a mechanical suffix or a silent level change.
+        devinModel = resolveDevinModel(modelId, effort, uids, []).modelUid;
+      } else {
+        // Without the catalog only a verified variant could carry "none", so
+        // it is always unsupported here; other levels degrade to the
+        // mechanical fold the provider validates itself.
+        if (effort === "none") {
+          throw unsupportedEffort("devin", modelId, effort, []);
+        }
+        devinModel = devinModelWithEffort(modelId, effort);
+      }
+    }
     return {
       command: env.DEVIN_BIN || "devin",
       args: [
@@ -244,18 +360,21 @@ function commandFor(agent: AgentSpec, prompt: string, env: NodeJS.ProcessEnv, ti
         // Mirrors the codex read-only sandbox and claude's disabled tools.
         "--permission-mode",
         "auto",
-        ...(devinModel && devinModel !== DEFAULT_MODEL_ID ? ["--model", devinModel] : []),
+        ...(devinModel ? ["--model", devinModel] : []),
         "--",
         prompt
       ]
     };
   }
 
+  if (effort && !GROK_SUPPORTED_EFFORTS.includes(effort)) {
+    throw unsupportedEffort("grok", modelId, effort, GROK_SUPPORTED_EFFORTS);
+  }
   return {
     command: env.GROK_BIN || "grok",
     args: [
       ...modelArgs,
-      ...(reasoningEffort ? ["--effort", reasoningEffort] : []),
+      ...(effort ? ["--effort", effort] : []),
       "--output-format",
       "plain",
       "--single",

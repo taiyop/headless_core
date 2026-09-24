@@ -141,6 +141,108 @@ import { getAvailableReasoningEffortOptions } from "@headless-core/core";
 const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 ```
 
+### `headless.createSession(options)`
+
+```ts
+const session = await headless.createSession({
+  agent: { provider: "codex", transport: "app-server", model: "default" }
+});
+```
+
+### `headless.shutdown()`
+
+この core が保持する全 session を閉じ、常駐 agent process を全て終了します。
+
+## Persistent sessions
+
+`run()` は呼び出しごとに新しい CLI プロセスを spawn します（transport `cli`、デフォルト）。起動オーバーヘッドを減らし会話を継続したい場合は、`createSession()` が常駐 agent プロセスを維持し、複数回の `session.run()` で再利用します。
+
+| provider | `transport` | 常駐プロセス |
+| --- | --- | --- |
+| `codex` | `app-server` | `codex app-server`（stdio 上の JSON-RPC） |
+| `devin` | `acp` | `devin acp`（stdio 上の Agent Client Protocol） |
+| 任意 | `cli`（デフォルト） | `run()` ごとの one-shot spawn |
+
+同一の provider / transport / binary を使う session は 1 つの OS プロセスを共有し、各 session は独立した会話（codex では thread、devin では ACP session）を持ちます。同一 session への `run()` は直列化され、別 session 同士は並行実行できます。最後の session が `close()` されるとプロセスは終了します。
+
+```ts
+const session = await headless.createSession({
+  agent: { provider: "codex", transport: "app-server" }
+});
+
+await session.run({
+  prompt: "Hello",
+  onProgress(event) {
+    console.log(event.state, event.partialOutput);
+  }
+});
+await session.run({ prompt: "同じ thread で追撃" });
+
+// プロセスは維持したまま新しい会話へ:
+await session.reset();
+
+// プロセス再起動なしのモデル一覧取得・切替:
+const models = await session.getAvailableModels();
+await session.setModel("MODEL_ID", "low");
+
+await session.close();
+
+// Devin も同じ API（ACP 経由）:
+const devin = await headless.createSession({
+  agent: { provider: "devin", transport: "acp" }
+});
+await devin.run({ prompt: "Hello" });
+await devin.close();
+
+// この core が持つ常駐プロセスを全て終了:
+await headless.shutdown();
+```
+
+`session.run()` は `prompt`、`signal`（`AbortSignal`）、`timeoutMs`、`onProgress` を受け付け、`headless.run()` と同じ progress event を返します。abort / timeout はリモート側の turn をキャンセルするため（`turn/interrupt` / `session/cancel`）、session は再利用可能なままです。権限 posture は CLI 経路と同等です: codex の thread は `sandbox: "read-only"` + `approvalPolicy: "never"` で動き（approval request は自動で拒否）、devin session は回答専用の `ask` モードを選択し、permission request はデフォルトで拒否します。
+
+devin の ACP session では、`model` config option が thinking level 埋め込みの variant uid（`swe-2-high`、`claude-opus-5-5-medium`）を提示する一方、`models.json` には通常 family slug（`swe-2`、`claude-opus-5.5`）が入ります。`setModel()` / session 作成時は、effort 合成 uid（`claude-opus-5.5` + `high` → `claude-opus-5-5-high`）→ 完全一致 / dashed 化した id → family が提示する唯一の variant（`swe-2` → `swe-2-high`、`gpt-6-astra` → `gpt-6-astra-medium`）の順に解決します。残った effort は session が `thought_level` config option を持つ場合にそこへ適用します。`default` を渡すと session 開始時の model / thought level に戻ります。
+
+## Reasoning effort
+
+`agent.reasoningEffort` は全 provider 共通の語彙を受け付けます:
+
+```ts
+type Effort = "default" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+```
+
+各値は互換ではありません:
+
+- `default` — effort を明示指定しない。provider / CLI / model のデフォルトが使われます。`reasoningEffort` 未指定と同じ挙動です。
+- `none` — reasoning / thinking を完全に無効化します。`minimal` とは別物で、model が本当の OFF（advertise された `none` level や non-thinking variant）を持つ場合のみ有効です。`minimal` / `low` への暗黙変換は行いません。
+- `minimal` — reasoning を OFF にせず動く最小 level で、「OFF」ではありません。
+- `low` / `medium` / `high` / `xhigh` / `max` — 対応範囲内で段階的な effort。
+
+各 adapter は level を provider 固有の仕組みに変換し、リクエスト送信**前**に model capability に照らして検証します（capability は `codex debug models`、app-server `model/list`、`devin models list`、ACP config option、`agy models` など runtime から取得）。非対応の値は `EffortError` になります:
+
+- `INVALID_EFFORT` — 語彙外の値（例: `"banana"`）。
+- `UNSUPPORTED_EFFORT` — 値は有効だが選択した model が表現できない。エラーメッセージに model の supported efforts を列挙し、暗黙のフォールバックは行いません。
+
+provider 別の変換:
+
+| provider | 仕組み | 備考 |
+| --- | --- | --- |
+| Codex | `model_reasoning_effort`（CLI `-c` / app-server `turn/start` の `effort`） | level はそのまま透過。`supported_reasoning_levels` / `supportedReasoningEfforts` で model ごとの対応を検証。`default` はパラメータ自体を送らない |
+| Claude Code | `--effort` | `low`, `medium`, `high`, `xhigh`, `max` |
+| Grok | `--effort` | `low`, `medium`, `high` |
+| Agy（Gemini 系） | level 埋め込み variant id（`--model gemini-3-8-flash-low`）または `--effort` | 要求 level を持つ variant が優先。`none` は明示的な non-thinking variant（`gemini-2-5-flash-none`）にのみマップし、`minimal` へは変換しない。それ以外の flag 範囲内の level は `--effort low|medium|high` |
+| Devin | variant uid（`--model <model>-<level>`）または ACP `thought_level` | `none` は明示的な non-reasoning variant（`gpt-5-4-none`、または thinking variant と並ぶ level 無しの sibling）にのみマップ — 機械的な `<model>-none` は生成しない。その他の level も advertised variant か `thought_level` に一致する必要がある |
+
+capability を取得できなかった場合、codex / agy は provider 側の検証に委譲します。devin の `none` は advertise された variant のみが担えるため、catalog 無しでは常に reject します。
+
+### transport ごとの capability 差異（devin）
+
+devin の capability は transport ごとに読み取られ、両者は一致しないことがあります:
+
+- `cli` — `devin models list` が全 variant uid を提示します（`gpt-6-luna-none`、`gpt-5-4-none` など non-thinking variant を含む）。
+- `acp` — session の `model` config option は**精選された subset**（例: `gpt-6-luna-medium` のみ）しか提示せず、`session/set_config_option` はその一覧外の値を拒否します（`Invalid value ... for config option 'model'`）。
+
+そのため、`cli` では使える effort が `acp` では非対応になりえます: `gpt-6-luna` + `none` は `cli` では `gpt-6-luna-none` に解決されますが、`acp` では session がその variant を提示していないため `UNSUPPORTED_EFFORT` になります。エラーの `supportedEfforts` は常に選択した transport の実際の選択肢を反映します。
+
 ## Options
 
 ### `createHeadlessCore`
@@ -156,8 +258,9 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | option | description |
 | --- | --- |
 | `agent.provider` | `codex`、`claude`、`grok`、`agy`、`devin` |
+| `agent.transport` | `cli`（デフォルト）、`app-server`（codex）、`acp`（devin）。Persistent sessions 参照 |
 | `agent.model` | provider に渡す model id。`default` の場合は `--model` を渡さない |
-| `agent.reasoningEffort` | provider に渡す reasoning effort。`default` の場合は渡さない |
+| `agent.reasoningEffort` | 共通 effort 語彙（`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`）。`default` / 未指定は effort を送らない。非対応値は `EffortError`。Reasoning effort 参照 |
 | `prompt` | Agent CLI に渡す指示 |
 | `onProgress` | 状態変化と途中出力の callback |
 | `onFallback` | 失敗時の fallback callback |
@@ -171,8 +274,8 @@ const efforts = getAvailableReasoningEffortOptions({ agent: "claude" });
 | Codex | `codex` or `CODEX_BIN` | `--model` | `--config model_reasoning_effort="..."` |
 | Claude Code | `claude` or `CLAUDE_BIN` | `--model` | `--effort` |
 | Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
-| Agy | `agy` or `AGY_BIN` | `--model` | 未対応 |
-| Devin | `devin` or `DEVIN_BIN` | `--model` | model uid に折り畳む: `model` + effort は `--model <model>-<effort>` になる（例: `claude-opus-5` + `high` -> `claude-opus-5-high`）。model の明示指定が必要。family によって未対応の level がある |
+| Agy | `agy` or `AGY_BIN` | `--model` | level 埋め込み variant id が優先（`gemini-3-8-flash-low`）、それ以外は `--effort low|medium|high`。`none` は advertise された non-thinking variant が必要 |
+| Devin | `devin` or `DEVIN_BIN` | `--model` | model uid に折り畳む: `model` + effort は `--model <model>-<effort>` になる（例: `claude-opus-5` + `high` -> `claude-opus-5-high`）。model の明示指定が必要。advertise された variant のみ使用 — `none` は明示的な non-reasoning variant にマップ、無ければエラー |
 
 ### Headless 時のツール / 権限
 
@@ -242,7 +345,7 @@ node dist/cli.js models inspect        # 全プロバイダーを inspect して
 
 ## Limitations
 
-- 会話履歴管理、DB 永続化、Web API server は含みません
+- DB 永続化や Web API server は含みません。session の会話は agent プロセス内にのみ存在し、`reset()` / `close()` / プロセス終了で破棄されます
 - retry は自動では行いません。必要な場合は `onFallback` で実装します
 - provider 固有の認証、課金、rate limit は各 CLI の設定に依存します
 - Agent CLI がローカルファイルを読み書きする可能性があります

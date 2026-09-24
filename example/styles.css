@@ -61,7 +61,7 @@ p {
 
 .controls {
   display: grid;
-  grid-template-columns: 240px 140px 1fr 140px;
+  grid-template-columns: 240px 120px 120px 1fr 140px;
   gap: 12px;
 }
 
@@ -110,10 +110,25 @@ button:hover:not(:disabled) {
   background: var(--accent-strong);
 }
 
+.status-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
 .status {
+  flex: 1;
   min-height: 20px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.elapsed {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .status.error {
@@ -178,6 +193,13 @@ button:hover:not(:disabled) {
 .message.assistant {
   justify-self: start;
   background: #fbfcfd;
+}
+
+.message-meta {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
 }
 
 .composer {

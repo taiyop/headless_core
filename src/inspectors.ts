@@ -69,6 +69,10 @@ export function parseAgyModels(stdout: string): string[] {
   return stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
+    .filter((line) => line && !line.toLowerCase().startsWith("fetching"))
+    // Newer `agy models` prints "id<TAB>Display Name" rows; the id is the
+    // selectable value. Older versions printed bare names, kept as-is.
+    .map((line) => (line.includes("\t") ? (line.split("\t")[0]?.trim() ?? "") : line))
     .filter(Boolean);
 }
 
