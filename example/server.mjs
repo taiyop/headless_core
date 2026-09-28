@@ -26,9 +26,11 @@ const sharedModelsPath = path.join(homedir(), ".config", "headless-core", "model
 
 const agents = ["codex", "claude", "agy", "grok", "devin"];
 // Persistent transports per provider (see "Persistent sessions" in the main
-// README): codex app-server and devin acp keep one process alive across runs.
+// README): codex app-server, agy_acp_server, and devin acp keep one process
+// alive across runs.
 const transportsByAgent = {
   codex: ["cli", "app-server"],
+  agy: ["cli", "acp"],
   devin: ["cli", "acp"]
 };
 const exampleBinDir = path.join(__dirname, "bin");

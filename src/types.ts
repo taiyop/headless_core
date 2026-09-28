@@ -44,7 +44,8 @@ export type GetAvailableReasoningEffortOptionsOptions = {
  *
  * - `cli`: spawn a one-shot CLI process per run (the default, unchanged behavior).
  * - `app-server`: persistent `codex app-server` process (codex only).
- * - `acp`: persistent `devin acp` Agent Client Protocol process (devin only).
+ * - `acp`: persistent Agent Client Protocol process — `devin acp` for devin,
+ *   `agy_acp_server` for agy.
  */
 export type AgentTransport = "cli" | "app-server" | "acp";
 
@@ -127,7 +128,7 @@ export type HeadlessSession = {
   /**
    * Changes the model without restarting the runtime. The new model applies
    * from the next run(). `reasoningEffort` is applied when the provider
-   * supports it separately (codex turn effort / ACP thought_level).
+   * supports it separately (codex turn effort / ACP session effort option).
    */
   setModel(model: string, reasoningEffort?: Effort | (string & {})): Promise<void>;
   getAvailableModels(): Promise<ModelCandidate[]>;

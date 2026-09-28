@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { AgyAcpRuntime, AgyAcpSession, agyAcpRuntimeKey } from "./agyAcp.js";
 import { resolveAgyEffort } from "./agyModel.js";
 import { CliSession } from "./cliSession.js";
 import {
@@ -91,6 +92,11 @@ async function createSession(ctx: SessionContext, options: CreateSessionOptions)
   }
 
   if (transport === "acp") {
+    if (agent.provider === "agy") {
+      const key = agyAcpRuntimeKey(ctx.env);
+      const runtime = await ctx.manager.acquire(key, () => AgyAcpRuntime.start(ctx));
+      return AgyAcpSession.create(runtime, ctx, agent, () => ctx.manager.release(key, runtime));
+    }
     const key = devinAcpRuntimeKey(ctx.env);
     const runtime = await ctx.manager.acquire(key, () => DevinAcpRuntime.start(ctx));
     return DevinAcpSession.create(runtime, ctx, agent, () => ctx.manager.release(key, runtime));

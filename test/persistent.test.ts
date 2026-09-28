@@ -727,11 +727,359 @@ describe("devin acp sessions", () => {
   });
 });
 
+describe("agy acp sessions", () => {
+  async function setup(extraEnv: NodeJS.ProcessEnv = {}): Promise<{ headless: HeadlessCore }> {
+    const bin = await installFixture("fake-agy-acp-server.mjs");
+    const headless = createHeadlessCore({
+      env: { ...process.env, AGY_ACP_BIN: bin, FAKE_LOG: logPath, ...extraEnv }
+    });
+    return { headless };
+  }
+
+  it("initializes, opens an ACP session, and streams message chunks", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    expect(session.id).toBe("agy-sess-1");
+
+    const events: ProgressEvent[] = [];
+    const output = await session.run({
+      prompt: "hello",
+      onProgress: (event) => {
+        events.push(event);
+      }
+    });
+    expect(output).toBe("echo:hello");
+    expect(deltasOf(events)).toBe("echo:hello");
+
+    const log = await readLog();
+    expect(log.filter((entry) => entry.method === "initialize")).toHaveLength(1);
+    expect(log.filter((entry) => entry.method === "session/new")).toHaveLength(1);
+    // Parity with `agy --print --mode accept-edits`: the writable auto_edit
+    // mode (the real server's name for accept-edits) is selected on start.
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" &&
+          entry.params?.configId === "mode" &&
+          entry.params?.value === "auto_edit"
+      )
+    ).toBe(true);
+
+    await session.close();
+    await headless.shutdown();
+  });
+
+  it("honors headless.run() over the acp transport", async () => {
+    const { headless } = await setup();
+    const output = await headless.run({
+      agent: { provider: "agy", transport: "acp" },
+      prompt: "oneshot"
+    });
+    expect(output).toBe("echo:oneshot");
+    await headless.shutdown();
+  });
+
+  it("reset() opens a new ACP session on the same process", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    expect(await session.run({ prompt: "first" })).toBe("echo:first");
+    const firstId = session.id;
+
+    await session.reset();
+    expect(session.id).toBe("agy-sess-2");
+    expect(await session.run({ prompt: "second" })).toBe("echo:second");
+
+    const log = await readLog();
+    expect(
+      log.some((entry) => entry.method === "session/close" && entry.params?.sessionId === firstId)
+    ).toBe(true);
+    expect(new Set(log.map((entry) => entry.pid)).size).toBe(1);
+    await headless.shutdown();
+  });
+
+  it("exposes model config options as available models", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    const models = await session.getAvailableModels();
+    expect(models.map((model) => model.id)).toEqual([
+      "gem-3",
+      "m-plain",
+      "gem-1",
+      "gem-1-low",
+      "gem-1-high",
+      "gem-2-none",
+      "gem-2-medium"
+    ]);
+    await headless.shutdown();
+  });
+
+  it("setModel folds the effort into an advertised variant id", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    await session.setModel("gem-1", "low");
+    const log = await readLog();
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" &&
+          entry.params?.configId === "model" &&
+          entry.params?.value === "gem-1-low"
+      )
+    ).toBe(true);
+    // The variant carries the level — no separate effort call is made.
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" && entry.params?.configId === "effort"
+      )
+    ).toBe(false);
+    await headless.shutdown();
+  });
+
+  it("applies a flag-range effort via the effort config option", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    await session.setModel("m-plain", "medium");
+    const log = await readLog();
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" &&
+          entry.params?.configId === "model" &&
+          entry.params?.value === "m-plain"
+      )
+    ).toBe(true);
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" &&
+          entry.params?.configId === "effort" &&
+          entry.params?.value === "medium"
+      )
+    ).toBe(true);
+    await headless.shutdown();
+  });
+
+  it("maps none to an advertised non-thinking variant", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    await session.setModel("gem-2", "none");
+    const log = await readLog();
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" &&
+          entry.params?.configId === "model" &&
+          entry.params?.value === "gem-2-none"
+      )
+    ).toBe(true);
+    await headless.shutdown();
+  });
+
+  it("rejects an effort the family cannot express", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    const error = await expectEffortError(session.setModel("gem-1", "xhigh"), "UNSUPPORTED_EFFORT");
+    expect(error.supportedEfforts).toContain("high");
+    const log = await readLog();
+    expect(log.some((entry) => entry.params?.value === "gem-1-xhigh")).toBe(false);
+    await headless.shutdown();
+  });
+
+  it("rejects a flag effort when the session exposes no effort option", async () => {
+    const { headless } = await setup({ FAKE_NO_EFFORT: "1" });
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    await expectEffortError(session.setModel("m-plain", "medium"), "UNSUPPORTED_EFFORT");
+    await headless.shutdown();
+  });
+
+  it("applies effort without a model via the effort option", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    await session.setModel("default", "high");
+    const log = await readLog();
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" &&
+          entry.params?.configId === "effort" &&
+          entry.params?.value === "high"
+      )
+    ).toBe(true);
+    await headless.shutdown();
+  });
+
+  it("setModel default restores the session's initial model and effort", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    await session.setModel("m-plain", "low");
+    await session.setModel("default", "default");
+    const log = await readLog();
+    const modelSets = log.filter(
+      (entry) => entry.method === "session/set_config_option" && entry.params?.configId === "model"
+    );
+    expect(modelSets.at(-1)?.params?.value).toBe("gem-3");
+    const effortSets = log.filter(
+      (entry) => entry.method === "session/set_config_option" && entry.params?.configId === "effort"
+    );
+    expect(effortSets.at(-1)?.params?.value).toBe("medium");
+    await headless.shutdown();
+  });
+
+  it("falls back to session/set_mode when no mode config option exists", async () => {
+    const { headless } = await setup({ FAKE_MODES_ONLY: "1" });
+    await headless.createSession({ agent: { provider: "agy", transport: "acp" } });
+    const log = await readLog();
+    expect(
+      log.some(
+        (entry) => entry.method === "session/set_mode" && entry.params?.modeId === "auto_edit"
+      )
+    ).toBe(true);
+    await headless.shutdown();
+  });
+
+  it("authenticates before session/new when the server advertises auth methods", async () => {
+    const { headless } = await setup({ FAKE_AUTH: "1" });
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    expect(await session.run({ prompt: "hi" })).toBe("echo:hi");
+    const log = await readLog();
+    const authenticate = log.findIndex((entry) => entry.method === "authenticate");
+    const sessionNew = log.findIndex((entry) => entry.method === "session/new");
+    expect(authenticate).toBeGreaterThanOrEqual(0);
+    expect(authenticate).toBeLessThan(sessionNew);
+    expect(
+      (log[authenticate]?.params as { methodId?: string } | undefined)?.methodId
+    ).toBe("oauth-personal");
+    await headless.shutdown();
+  });
+
+  it("rejects an invalid effort string before the session starts", async () => {
+    const { headless } = await setup();
+    await expectEffortError(
+      headless.createSession({
+        agent: { provider: "agy", transport: "acp", reasoningEffort: "banana" }
+      }),
+      "INVALID_EFFORT"
+    );
+    const log = await readLog();
+    expect(log.some((entry) => entry.method === "session/new")).toBe(false);
+    await headless.shutdown();
+  });
+
+  it("AbortSignal cancels the prompt", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    const controller = new AbortController();
+    const pending = session.run({ prompt: "NEVER", signal: controller.signal });
+    await waitForLog((log) => log.some((entry) => entry.method === "session/prompt"));
+    controller.abort();
+
+    await expectErrorCode(pending, "REQUEST_ABORTED");
+    await waitForLog((log) => log.some((entry) => entry.method === "session/cancel"));
+    expect(await session.run({ prompt: "ok" })).toBe("echo:ok");
+    await headless.shutdown();
+  });
+
+  it("timeoutMs cancels the prompt", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    await expectErrorCode(session.run({ prompt: "SLOW", timeoutMs: 200 }), "REQUEST_TIMEOUT");
+    await waitForLog((log) => log.some((entry) => entry.method === "session/cancel"));
+    expect(await session.run({ prompt: "ok" })).toBe("echo:ok");
+    await headless.shutdown();
+  });
+
+  it("auto-approves permission requests like --dangerously-skip-permissions", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    const output = await session.run({ prompt: "PERM", timeoutMs: 5000 });
+    expect(output).toBe("perm-answered");
+    const log = await readLog();
+    const answer = log.find((entry) => entry.method === "_response_to_agent");
+    expect((answer?.result as { outcome?: { optionId?: string } })?.outcome?.optionId).toBe("allow");
+    await headless.shutdown();
+  });
+
+  it("shares one process across sessions and kills it after the last close", async () => {
+    const { headless } = await setup();
+    const a = await headless.createSession({ agent: { provider: "agy", transport: "acp" } });
+    const b = await headless.createSession({ agent: { provider: "agy", transport: "acp" } });
+    expect(a.id).toBe("agy-sess-1");
+    expect(b.id).toBe("agy-sess-2");
+    expect(await a.run({ prompt: "A" })).toBe("echo:A");
+    expect(await b.run({ prompt: "B" })).toBe("echo:B");
+
+    let log = await readLog();
+    expect(log.filter((entry) => entry.method === "initialize")).toHaveLength(1);
+    expect(new Set(log.map((entry) => entry.pid)).size).toBe(1);
+
+    await a.close();
+    expect(await b.run({ prompt: "B2" })).toBe("echo:B2");
+
+    await b.close();
+    const c = await headless.createSession({ agent: { provider: "agy", transport: "acp" } });
+    expect(c.id).toBe("agy-sess-1");
+    log = await readLog();
+    expect(log.filter((entry) => entry.method === "initialize")).toHaveLength(2);
+    expect(new Set(log.map((entry) => entry.pid)).size).toBe(2);
+    await headless.shutdown();
+  });
+
+  it("a crashed process rejects pending work and a fresh runtime starts on demand", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    await expectErrorCode(session.run({ prompt: "KILL" }), "PROTOCOL_ERROR");
+    await expectErrorCode(session.run({ prompt: "again" }), "PROTOCOL_ERROR");
+
+    const fresh = await headless.createSession({
+      agent: { provider: "agy", transport: "acp" }
+    });
+    expect(await fresh.run({ prompt: "hi" })).toBe("echo:hi");
+    const log = await readLog();
+    expect(log.filter((entry) => entry.method === "initialize")).toHaveLength(2);
+    await headless.shutdown();
+  });
+});
+
 describe("transport validation and cli sessions", () => {
   it("rejects unsupported provider/transport combinations", async () => {
     const headless = createHeadlessCore({ env: { ...process.env } });
     await expectErrorCode(
       headless.createSession({ agent: { provider: "codex", transport: "acp" } }),
+      "UNSUPPORTED_TRANSPORT"
+    );
+    await expectErrorCode(
+      headless.createSession({ agent: { provider: "agy", transport: "app-server" } }),
       "UNSUPPORTED_TRANSPORT"
     );
     await expectErrorCode(

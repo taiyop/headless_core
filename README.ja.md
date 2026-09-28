@@ -160,10 +160,11 @@ const session = await headless.createSession({
 | provider | `transport` | 常駐プロセス |
 | --- | --- | --- |
 | `codex` | `app-server` | `codex app-server`（stdio 上の JSON-RPC） |
+| `agy` | `acp` | `agy_acp_server`（stdio 上の Agent Client Protocol） |
 | `devin` | `acp` | `devin acp`（stdio 上の Agent Client Protocol） |
 | 任意 | `cli`（デフォルト） | `run()` ごとの one-shot spawn |
 
-同一の provider / transport / binary を使う session は 1 つの OS プロセスを共有し、各 session は独立した会話（codex では thread、devin では ACP session）を持ちます。同一 session への `run()` は直列化され、別 session 同士は並行実行できます。最後の session が `close()` されるとプロセスは終了します。
+同一の provider / transport / binary を使う session は 1 つの OS プロセスを共有し、各 session は独立した会話（codex では thread、agy / devin では ACP session）を持ちます。同一 session への `run()` は直列化され、別 session 同士は並行実行できます。最後の session が `close()` されるとプロセスは終了します。
 
 ```ts
 const session = await headless.createSession({
@@ -187,18 +188,26 @@ await session.setModel("MODEL_ID", "low");
 
 await session.close();
 
-// Devin も同じ API（ACP 経由）:
+// Devin / Agy も同じ API（ACP 経由: `devin acp` / `agy_acp_server`）:
 const devin = await headless.createSession({
   agent: { provider: "devin", transport: "acp" }
 });
 await devin.run({ prompt: "Hello" });
 await devin.close();
 
+const agy = await headless.createSession({
+  agent: { provider: "agy", transport: "acp" }
+});
+await agy.run({ prompt: "Hello" });
+await agy.close();
+
 // この core が持つ常駐プロセスを全て終了:
 await headless.shutdown();
 ```
 
-`session.run()` は `prompt`、`signal`（`AbortSignal`）、`timeoutMs`、`onProgress` を受け付け、`headless.run()` と同じ progress event を返します。abort / timeout はリモート側の turn をキャンセルするため（`turn/interrupt` / `session/cancel`）、session は再利用可能なままです。権限 posture は CLI 経路と同等です: codex の thread は `sandbox: "read-only"` + `approvalPolicy: "never"` で動き（approval request は自動で拒否）、devin session は回答専用の `ask` モードを選択し、permission request はデフォルトで拒否します。
+`session.run()` は `prompt`、`signal`（`AbortSignal`）、`timeoutMs`、`onProgress` を受け付け、`headless.run()` と同じ progress event を返します。abort / timeout はリモート側の turn をキャンセルするため（`turn/interrupt` / `session/cancel`）、session は再利用可能なままです。権限 posture は各 provider の CLI 経路と同等です: codex の thread は `sandbox: "read-only"` + `approvalPolicy: "never"` で動き（approval request は自動で拒否）、devin session は回答専用の `ask` モードを選択し permission request はデフォルトで拒否、agy session は server が提示する中で最も強い編集 mode（`accept-edits` / `auto_edit` / `yolo` — build ごとに名称が異なる）を選択し、permission request を自動承認します（`agy --print --dangerously-skip-permissions` と同等）。
+
+agy の `acp` transport は `agy` CLI ではなく、独立バイナリの `agy_acp_server`（ACP レジストリの `antigravity-acp`）を起動します。`AGY_ACP_BIN`、または PATH 上の `agy_acp_server` / `agy_acp_server.par`（Windows は `agy_acp_server.exe`）から解決されます。model と reasoning effort は session の ACP config option 経由で適用されます: level 埋め込み variant id（`gemini-3-8-flash-low`）が advertise されていればそれを選択し、それ以外の flag 範囲内の level は session の effort 系 option（`effort`、`thought_level` など）へ送ります。
 
 devin の ACP session では、`model` config option が thinking level 埋め込みの variant uid（`swe-2-high`、`claude-opus-5-5-medium`）を提示する一方、`models.json` には通常 family slug（`swe-2`、`claude-opus-5.5`）が入ります。`setModel()` / session 作成時は、effort 合成 uid（`claude-opus-5.5` + `high` → `claude-opus-5-5-high`）→ 完全一致 / dashed 化した id → family が提示する唯一の variant（`swe-2` → `swe-2-high`、`gpt-6-astra` → `gpt-6-astra-medium`）の順に解決します。残った effort は session が `thought_level` config option を持つ場合にそこへ適用します。`default` を渡すと session 開始時の model / thought level に戻ります。
 
@@ -258,7 +267,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | option | description |
 | --- | --- |
 | `agent.provider` | `codex`、`claude`、`grok`、`agy`、`devin` |
-| `agent.transport` | `cli`（デフォルト）、`app-server`（codex）、`acp`（devin）。Persistent sessions 参照 |
+| `agent.transport` | `cli`（デフォルト）、`app-server`（codex）、`acp`（agy、devin）。Persistent sessions 参照 |
 | `agent.model` | provider に渡す model id。`default` の場合は `--model` を渡さない |
 | `agent.reasoningEffort` | 共通 effort 語彙（`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`）。`default` / 未指定は effort を送らない。非対応値は `EffortError`。Reasoning effort 参照 |
 | `prompt` | Agent CLI に渡す指示 |
@@ -274,7 +283,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | Codex | `codex` or `CODEX_BIN` | `--model` | `--config model_reasoning_effort="..."` |
 | Claude Code | `claude` or `CLAUDE_BIN` | `--model` | `--effort` |
 | Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
-| Agy | `agy` or `AGY_BIN` | `--model` | level 埋め込み variant id が優先（`gemini-3-8-flash-low`）、それ以外は `--effort low|medium|high`。`none` は advertise された non-thinking variant が必要 |
+| Agy | `agy` or `AGY_BIN`（cli）; `agy_acp_server` or `AGY_ACP_BIN`（acp） | `--model` | level 埋め込み variant id が優先（`gemini-3-8-flash-low`）、それ以外は `--effort low|medium|high`（cli）または ACP effort config option（acp）。`none` は advertise された non-thinking variant が必要 |
 | Devin | `devin` or `DEVIN_BIN` | `--model` | model uid に折り畳む: `model` + effort は `--model <model>-<effort>` になる（例: `claude-opus-5` + `high` -> `claude-opus-5-high`）。model の明示指定が必要。advertise された variant のみ使用 — `none` は明示的な non-reasoning variant にマップ、無ければエラー |
 
 ### Headless 時のツール / 権限
@@ -283,7 +292,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | --- | --- |
 | Codex | `--sandbox read-only`（ファイル書き込み不可） |
 | Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ） |
-| Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる。ツールがそれでも自動拒否された場合、Agy は stdout 空のまま exit 0 で stderr に通知を出すことがあり、そのときは失敗として扱う。 |
+| Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる。ツールがそれでも自動拒否された場合、Agy は stdout 空のまま exit 0 で stderr に通知を出すことがあり、そのときは失敗として扱う。`acp` transport でも同じ posture を維持する: session は編集可能な mode（`accept-edits` / `auto_edit` / `yolo`）を選択し、`session/request_permission` は自動承認される。 |
 | Grok | 特別な sandbox フラグなし |
 | Devin | `--print --respect-workspace-trust false --permission-mode auto`（read-only ツールのみ自動承認・ファイル書き込み不可）。prompt は `--` の後に渡す |
 
