@@ -209,6 +209,29 @@ await headless.shutdown();
 
 agy の `acp` transport は `agy` CLI ではなく、独立バイナリの `agy_acp_server`（ACP レジストリの `antigravity-acp`）を起動します。`AGY_ACP_BIN`、または PATH 上の `agy_acp_server` / `agy_acp_server.par`（Windows は `agy_acp_server.exe`）から解決されます。model と reasoning effort は session の ACP config option 経由で適用されます: level 埋め込み variant id（`gemini-3-8-flash-low`）が advertise されていればそれを選択し、それ以外の flag 範囲内の level は session の effort 系 option（`effort`、`thought_level` など）へ送ります。
 
+#### `agy_acp_server` のインストール
+
+`acp` transport には Google Antigravity 公式の ACP server が必要です。[ACP レジストリ](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json)（registry id `antigravity-acp`、binary `agy_acp_server.par`。Windows は `agy_acp_server.exe`）で配布されています。最新バージョンと各 platform のダウンロード URL はレジストリを確認してください。以下は [setup wiki](https://github.com/taiyop/headless_core/wiki/Antigravity-ACP-Server-(agy_acp_server)-%E3%81%AE%E3%82%BB%E3%83%83%E3%83%88%E3%82%A2%E3%83%83%E3%83%97) の手順に沿った macOS での例です:
+
+```sh
+mkdir -p ~/.local/share/antigravity-acp && cd ~/.local/share/antigravity-acp
+uname -m   # arm64（Apple Silicon）または x86_64（Intel）
+curl -L -o agy-acp.zip \
+  https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.2.1-darwin-arm64.zip
+# Intel Mac は ...-darwin-x86_64.zip。Linux / Windows はレジストリ参照
+unzip agy-acp.zip && chmod +x agy_acp_server.par
+xattr -cr ~/.local/share/antigravity-acp   # Gatekeeper にブロックされた場合のみ
+```
+
+その後、`AGY_ACP_BIN=~/.local/share/antigravity-acp/agy_acp_server.par` を設定するか、symlink で PATH に置きます:
+
+```sh
+mkdir -p ~/.local/bin
+ln -s ~/.local/share/antigravity-acp/agy_acp_server.par ~/.local/bin/agy_acp_server
+```
+
+server は `~/.gemini/` 配下の Antigravity credential（Antigravity app / `agy` CLI と共通）で Google アカウント認証を行います。先にそちらでサインインしておけば、`initialize` / `session/new` は非対話で通ります。
+
 devin の ACP session では、`model` config option が thinking level 埋め込みの variant uid（`swe-2-high`、`claude-opus-5-5-medium`）を提示する一方、`models.json` には通常 family slug（`swe-2`、`claude-opus-5.5`）が入ります。`setModel()` / session 作成時は、effort 合成 uid（`claude-opus-5.5` + `high` → `claude-opus-5-5-high`）→ 完全一致 / dashed 化した id → family が提示する唯一の variant（`swe-2` → `swe-2-high`、`gpt-6-astra` → `gpt-6-astra-medium`）の順に解決します。残った effort は session が `thought_level` config option を持つ場合にそこへ適用します。`default` を渡すと session 開始時の model / thought level に戻ります。
 
 ## Reasoning effort
@@ -349,6 +372,7 @@ node dist/cli.js models inspect        # 全プロバイダーを inspect して
 
 - Node.js 20+
 - 利用する Agent CLI がローカル環境にインストール済みであること
+- agy の `acp` transport を使う場合は、公式の `agy_acp_server` バイナリが別途必要（[インストール手順](#agy_acp_server-のインストール)）
 - macOS / Linux 推奨
 - Windows は未検証
 

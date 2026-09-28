@@ -209,6 +209,29 @@ await headless.shutdown();
 
 The agy `acp` transport spawns the standalone `agy_acp_server` binary (the `antigravity-acp` ACP registry entry), not the `agy` CLI. It is resolved from `AGY_ACP_BIN`, or `agy_acp_server` / `agy_acp_server.par` on `PATH` (`agy_acp_server.exe` on Windows). Models and reasoning effort are applied through the session's ACP config options: a level-embedded variant id (`gemini-3-8-flash-low`) is selected when advertised, and in-range levels otherwise go to the session's effort option (`effort`, `thought_level`, ...).
 
+#### Installing `agy_acp_server`
+
+The `acp` transport needs the official Google Antigravity ACP server, which is distributed through the [ACP registry](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json) (registry id `antigravity-acp`; binary `agy_acp_server.par`, or `agy_acp_server.exe` on Windows). Check the registry for the latest version and the download URL for your platform — the walkthrough below follows the [setup wiki](https://github.com/taiyop/headless_core/wiki/Antigravity-ACP-Server-(agy_acp_server)-%E3%81%AE%E3%82%BB%E3%83%83%E3%83%88%E3%82%A2%E3%83%83%E3%83%97):
+
+```sh
+mkdir -p ~/.local/share/antigravity-acp && cd ~/.local/share/antigravity-acp
+uname -m   # arm64 (Apple Silicon) or x86_64 (Intel)
+curl -L -o agy-acp.zip \
+  https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.2.1-darwin-arm64.zip
+# Intel Macs: use ...-darwin-x86_64.zip; see the registry for Linux/Windows builds
+unzip agy-acp.zip && chmod +x agy_acp_server.par
+xattr -cr ~/.local/share/antigravity-acp   # only if Gatekeeper blocks execution
+```
+
+Then either export `AGY_ACP_BIN=~/.local/share/antigravity-acp/agy_acp_server.par`, or put it on `PATH` via a symlink:
+
+```sh
+mkdir -p ~/.local/bin
+ln -s ~/.local/share/antigravity-acp/agy_acp_server.par ~/.local/bin/agy_acp_server
+```
+
+The server authenticates with your Google account using the Antigravity credentials under `~/.gemini/` (shared with the Antigravity app / `agy` CLI). Sign in there first — once credentials exist, `initialize`/`session/new` work without an interactive flow.
+
 For devin ACP sessions the `model` config option advertises variant uids that embed the thinking level (`swe-2-high`, `claude-opus-5-5-medium`), while `models.json` typically holds family slugs (`swe-2`, `claude-opus-5.5`). `setModel()`/session creation resolve them in this order: the effort-folded uid (`claude-opus-5.5` + `high` -> `claude-opus-5-5-high`), the exact or dashed id, then the family's only advertised variant (`swe-2` -> `swe-2-high`, `gpt-6-astra` -> `gpt-6-astra-medium`). Any remaining effort is applied via the `thought_level` config option when the session offers it. Passing `default` restores the model/thought level the session started with.
 
 ## Reasoning effort
@@ -349,6 +372,7 @@ node dist/cli.js models inspect        # inspects all providers and prints JSON 
 
 - Node.js 20+
 - The corresponding Agent CLI must be installed in the local environment
+- For the agy `acp` transport: the official `agy_acp_server` binary (see [Installing `agy_acp_server`](#installing-agy_acp_server))
 - macOS / Linux recommended
 - Windows is not verified
 

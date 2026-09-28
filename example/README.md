@@ -55,7 +55,7 @@ npm run example
 - session 使用中に model / reasoningEffort を変えて送信すると `session.setModel()` で切り替わります。devin では family slug (`swe-2`, `claude-opus-5.5`) と effort が runtime の提供する variant uid (`swe-2-high`, `claude-opus-5-5-medium`) に自動で解決され、解決できない model id は session 側の error として表示されます。
 - devin では transport によって使える effort が異なります。`cli` は `devin models list` の全 variant (`gpt-6-luna-none` 等) を解決できますが、`acp` は session の `model` config option が提示する subset (`gpt-6-luna-medium` のみ等) に限られ、option 外の値は ACP が拒否します。例: `gpt-6-luna` + `none` は `cli` では動きますが `acp` では `UNSUPPORTED_EFFORT` になります。
 - 永続 session の初回 run 後、`session.getAvailableModels()` が返す model id を dropdown に merge します(codex `model/list` / ACP session の `model` config option)。models.json に無い runtime 側の実際の候補をそのまま試せます。
-- agy の `acp` transport は `agy` CLI ではなく別バイナリの `agy_acp_server` を起動します(PATH 上の `agy_acp_server` / `agy_acp_server.par`、または `AGY_ACP_BIN` で指定)。権限 prompt は `agy --print --dangerously-skip-permissions` と同じく自動承認され、session は編集可能な mode（`accept-edits` / `auto_edit` / `yolo`）を選択します。
+- agy の `acp` transport は `agy` CLI ではなく別バイナリの `agy_acp_server` を起動します(PATH 上の `agy_acp_server` / `agy_acp_server.par`、または `AGY_ACP_BIN` で指定)。未インストールの場合は [setup wiki](https://github.com/taiyop/headless_core/wiki/Antigravity-ACP-Server-(agy_acp_server)-%E3%81%AE%E3%82%BB%E3%83%83%E3%83%88%E3%82%A2%E3%83%83%E3%83%97) の手順で公式バイナリを入れてください。権限 prompt は `agy --print --dangerously-skip-permissions` と同じく自動承認され、session は編集可能な mode（`accept-edits` / `auto_edit` / `yolo`）を選択します。
 - `New chat` は browser 側の履歴をクリアし、永続 transport では `session.reset()` で同じ process 上に新しい会話を始めます。status 行に現在の session id (codex thread id / ACP session id) を表示します。
 - server を Ctrl+C などで終了すると、開いている session を close して常駐 process も終了します。
 
