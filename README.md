@@ -161,6 +161,7 @@ Closes all sessions and terminates every persistent agent process owned by this 
 | --- | --- | --- |
 | `codex` | `app-server` | `codex app-server` (JSON-RPC over stdio) |
 | `agy` | `acp` | `agy_acp_server` (Agent Client Protocol over stdio) |
+| `grok` | `acp` | `grok agent --always-approve stdio` (Agent Client Protocol over stdio) |
 | `devin` | `acp` | `devin acp` (Agent Client Protocol over stdio) |
 | any | `cli` (default) | one-shot spawn per `run()` |
 
@@ -188,12 +189,19 @@ await session.setModel("MODEL_ID", "low");
 
 await session.close();
 
-// Devin and Agy use the same API over ACP (`devin acp` / `agy_acp_server`):
+// Devin, Grok, and Agy use the same API over ACP
+// (`devin acp` / `grok agent stdio` / `agy_acp_server`):
 const devin = await headless.createSession({
   agent: { provider: "devin", transport: "acp" }
 });
 await devin.run({ prompt: "Hello" });
 await devin.close();
+
+const grok = await headless.createSession({
+  agent: { provider: "grok", transport: "acp" }
+});
+await grok.run({ prompt: "Hello" });
+await grok.close();
 
 const agy = await headless.createSession({
   agent: { provider: "agy", transport: "acp" }
@@ -205,7 +213,7 @@ await agy.close();
 await headless.shutdown();
 ```
 
-`session.run()` accepts `prompt`, `signal` (`AbortSignal`), `timeoutMs`, and `onProgress` — the same progress events as `headless.run()`. Abort and timeout cancel the remote turn (`turn/interrupt` / `session/cancel`), so the session stays reusable. The headless permission posture matches each provider's CLI path: codex threads run with `sandbox: "read-only"` and `approvalPolicy: "never"` (approval requests are declined automatically), devin sessions select the answer-only `ask` mode with permission requests denied by default, and agy sessions select the most capable advertised mode (`accept-edits`, `auto_edit`, or `yolo` — the names differ per server build) and auto-approve permission requests (matching `agy --print --dangerously-skip-permissions`).
+`session.run()` accepts `prompt`, `signal` (`AbortSignal`), `timeoutMs`, and `onProgress` — the same progress events as `headless.run()`. Abort and timeout cancel the remote turn (`turn/interrupt` / `session/cancel`), so the session stays reusable. The headless permission posture matches each provider's CLI path: codex threads run with `sandbox: "read-only"` and `approvalPolicy: "never"` (approval requests are declined automatically), devin sessions select the answer-only `ask` mode with permission requests denied by default, grok sessions run `grok agent --always-approve` (matching `grok --single` headless runs, which never pause for tool prompts) and auto-approve permission requests, and agy sessions select the most capable advertised mode (`accept-edits`, `auto_edit`, or `yolo` — the names differ per server build) and auto-approve permission requests (matching `agy --print --dangerously-skip-permissions`).
 
 The agy `acp` transport spawns the standalone `agy_acp_server` binary (the `antigravity-acp` ACP registry entry), not the `agy` CLI. It is resolved from `AGY_ACP_BIN`, or `agy_acp_server` / `agy_acp_server.par` on `PATH` (`agy_acp_server.exe` on Windows). Models and reasoning effort are applied through the session's ACP config options: a level-embedded variant id (`gemini-3-8-flash-low`) is selected when advertised, and in-range levels otherwise go to the session's effort option (`effort`, `thought_level`, ...).
 
@@ -231,6 +239,8 @@ ln -s ~/.local/share/antigravity-acp/agy_acp_server.par ~/.local/bin/agy_acp_ser
 ```
 
 The server authenticates with your Google account using the Antigravity credentials under `~/.gemini/` (shared with the Antigravity app / `agy` CLI). Sign in there first — once credentials exist, `initialize`/`session/new` work without an interactive flow.
+
+The grok `acp` transport spawns `grok agent --always-approve stdio` from the same Grok Build binary the `cli` transport uses (`grok` or `GROK_BIN`) — no separate server to install. It authenticates with the `cached_token` method (`~/.grok/auth.json`), so run `grok login` (or use the TUI) once first. `session/new` advertises a `models` catalog plus `model`/`reasoning_effort` config options: `setModel()` selects the model and applies the effort through the session's effort option, validated against the levels each model advertises (`low`/`medium`/`high`/`xhigh` on reasoning models). Passing `default` restores the model/effort the session started with.
 
 For devin ACP sessions the `model` config option advertises variant uids that embed the thinking level (`swe-2-high`, `claude-opus-5-5-medium`), while `models.json` typically holds family slugs (`swe-2`, `claude-opus-5.5`). `setModel()`/session creation resolve them in this order: the effort-folded uid (`claude-opus-5.5` + `high` -> `claude-opus-5-5-high`), the exact or dashed id, then the family's only advertised variant (`swe-2` -> `swe-2-high`, `gpt-6-astra` -> `gpt-6-astra-medium`). Any remaining effort is applied via the `thought_level` config option when the session offers it. Passing `default` restores the model/thought level the session started with.
 
@@ -260,7 +270,7 @@ Per-provider mapping:
 | --- | --- | --- |
 | Codex | `model_reasoning_effort` (CLI `-c` / app-server `turn/start` `effort`) | Levels pass through verbatim. Per-model support is enforced from `supported_reasoning_levels` / `supportedReasoningEfforts`. `default` omits the parameter |
 | Claude Code | `--effort` | Accepts `low`, `medium`, `high`, `xhigh`, `max` |
-| Grok | `--effort` | Accepts `low`, `medium`, `high` |
+| Grok | `--effort` (cli) / ACP `reasoning_effort` config option (acp) | Accepts `low`, `medium`, `high`, `xhigh`. On `acp`, per-model support is enforced from the session's `models` catalog |
 | Agy (Gemini-family) | level-embedded variant ids (`--model gemini-3-8-flash-low`) or `--effort` | A variant carrying the requested level wins; `none` maps only to an explicit non-thinking variant (`gemini-2-5-flash-none`), never to `minimal`; remaining in-range levels use `--effort low|medium|high` |
 | Devin | variant uids (`--model <model>-<level>`) or ACP `thought_level` | `none` maps only to an explicit non-reasoning variant (`gpt-5-4-none`, or the family's level-less sibling among thinking variants) — never to a mechanical `<model>-none`. Other levels must match an advertised variant or `thought_level` |
 
@@ -290,7 +300,7 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 | option | description |
 | --- | --- |
 | `agent.provider` | `codex`, `claude`, `grok`, `agy`, `devin` |
-| `agent.transport` | `cli` (default), `app-server` (codex), `acp` (agy, devin). See Persistent sessions |
+| `agent.transport` | `cli` (default), `app-server` (codex), `acp` (agy, grok, devin). See Persistent sessions |
 | `agent.model` | Model ID passed to the provider. If `default`, `--model` is not passed |
 | `agent.reasoningEffort` | Shared effort vocabulary (`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). `default`/omitted sends no effort; unsupported values raise `EffortError`. See Reasoning effort |
 | `prompt` | Instructions passed to the Agent CLI |
@@ -305,7 +315,7 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 | --- | --- | --- | --- |
 | Codex | `codex` or `CODEX_BIN` | `--model` | `--config model_reasoning_effort="..."` |
 | Claude Code | `claude` or `CLAUDE_BIN` | `--model` | `--effort` |
-| Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
+| Grok | `grok` or `GROK_BIN` (both transports; acp runs `grok agent --always-approve stdio`) | `--model` (cli) / ACP `model` config option (acp) | `--effort low|medium|high|xhigh` (cli) / ACP `reasoning_effort` config option (acp) |
 | Agy | `agy` or `AGY_BIN` (cli); `agy_acp_server` or `AGY_ACP_BIN` (acp) | `--model` | Level-embedded variant ids win (`gemini-3-8-flash-low`); otherwise `--effort low|medium|high` (cli) or the ACP effort config option (acp). `none` requires an advertised non-thinking variant |
 | Devin | `devin` or `DEVIN_BIN` | `--model` | Folded into the model uid: `model` + effort becomes `--model <model>-<effort>` (e.g. `claude-opus-5` + `high` -> `claude-opus-5-high`). Requires an explicit model; only advertised variants are used — `none` maps to an explicit non-reasoning variant or fails |
 
@@ -316,7 +326,7 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 | Codex | `--sandbox read-only` (no file writes) |
 | Claude Code | `--tools ""` (no tools; text-in/text-out only) |
 | Agy | `--dangerously-skip-permissions` and `--mode accept-edits` so non-interactive `--print` can run tools and write files (e.g. image generation). `--print-timeout` matches the run `timeoutMs`. If a tool is still auto-denied, Agy may exit 0 with an empty stdout and a stderr notice; that is treated as a failed run. The `acp` transport keeps the same posture: sessions select an edit-capable mode (`accept-edits`/`auto_edit`/`yolo`) and `session/request_permission` is auto-approved. |
-| Grok | No special sandbox flags |
+| Grok | No special sandbox flags (`grok --single` headless runs never pause for tool prompts). The `acp` transport keeps the same posture: `grok agent` runs with `--always-approve` and `session/request_permission` is auto-approved |
 | Devin | `--print --respect-workspace-trust false --permission-mode auto` (read-only tools auto-approved; no file writes). The prompt is passed after `--` |
 
 ## Models Config

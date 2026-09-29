@@ -129,7 +129,8 @@ describe("getAvailableReasoningEffortOptions", () => {
       DEFAULT_REASONING_EFFORT_ID,
       "low",
       "medium",
-      "high"
+      "high",
+      "xhigh"
     ]);
   });
 

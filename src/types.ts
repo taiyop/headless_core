@@ -45,7 +45,7 @@ export type GetAvailableReasoningEffortOptionsOptions = {
  * - `cli`: spawn a one-shot CLI process per run (the default, unchanged behavior).
  * - `app-server`: persistent `codex app-server` process (codex only).
  * - `acp`: persistent Agent Client Protocol process — `devin acp` for devin,
- *   `agy_acp_server` for agy.
+ *   `agy_acp_server` for agy, `grok agent --always-approve stdio` for grok.
  */
 export type AgentTransport = "cli" | "app-server" | "acp";
 

@@ -161,6 +161,7 @@ const session = await headless.createSession({
 | --- | --- | --- |
 | `codex` | `app-server` | `codex app-server`（stdio 上の JSON-RPC） |
 | `agy` | `acp` | `agy_acp_server`（stdio 上の Agent Client Protocol） |
+| `grok` | `acp` | `grok agent --always-approve stdio`（stdio 上の Agent Client Protocol） |
 | `devin` | `acp` | `devin acp`（stdio 上の Agent Client Protocol） |
 | 任意 | `cli`（デフォルト） | `run()` ごとの one-shot spawn |
 
@@ -188,12 +189,19 @@ await session.setModel("MODEL_ID", "low");
 
 await session.close();
 
-// Devin / Agy も同じ API（ACP 経由: `devin acp` / `agy_acp_server`）:
+// Devin / Grok / Agy も同じ API
+//（ACP 経由: `devin acp` / `grok agent stdio` / `agy_acp_server`）:
 const devin = await headless.createSession({
   agent: { provider: "devin", transport: "acp" }
 });
 await devin.run({ prompt: "Hello" });
 await devin.close();
+
+const grok = await headless.createSession({
+  agent: { provider: "grok", transport: "acp" }
+});
+await grok.run({ prompt: "Hello" });
+await grok.close();
 
 const agy = await headless.createSession({
   agent: { provider: "agy", transport: "acp" }
@@ -205,7 +213,7 @@ await agy.close();
 await headless.shutdown();
 ```
 
-`session.run()` は `prompt`、`signal`（`AbortSignal`）、`timeoutMs`、`onProgress` を受け付け、`headless.run()` と同じ progress event を返します。abort / timeout はリモート側の turn をキャンセルするため（`turn/interrupt` / `session/cancel`）、session は再利用可能なままです。権限 posture は各 provider の CLI 経路と同等です: codex の thread は `sandbox: "read-only"` + `approvalPolicy: "never"` で動き（approval request は自動で拒否）、devin session は回答専用の `ask` モードを選択し permission request はデフォルトで拒否、agy session は server が提示する中で最も強い編集 mode（`accept-edits` / `auto_edit` / `yolo` — build ごとに名称が異なる）を選択し、permission request を自動承認します（`agy --print --dangerously-skip-permissions` と同等）。
+`session.run()` は `prompt`、`signal`（`AbortSignal`）、`timeoutMs`、`onProgress` を受け付け、`headless.run()` と同じ progress event を返します。abort / timeout はリモート側の turn をキャンセルするため（`turn/interrupt` / `session/cancel`）、session は再利用可能なままです。権限 posture は各 provider の CLI 経路と同等です: codex の thread は `sandbox: "read-only"` + `approvalPolicy: "never"` で動き（approval request は自動で拒否）、devin session は回答専用の `ask` モードを選択し permission request はデフォルトで拒否、grok session は `grok agent --always-approve` で動き（`grok --single` の headless 実行がツールの確認で停止しないのと同等）し permission request を自動承認、agy session は server が提示する中で最も強い編集 mode（`accept-edits` / `auto_edit` / `yolo` — build ごとに名称が異なる）を選択し、permission request を自動承認します（`agy --print --dangerously-skip-permissions` と同等）。
 
 agy の `acp` transport は `agy` CLI ではなく、独立バイナリの `agy_acp_server`（ACP レジストリの `antigravity-acp`）を起動します。`AGY_ACP_BIN`、または PATH 上の `agy_acp_server` / `agy_acp_server.par`（Windows は `agy_acp_server.exe`）から解決されます。model と reasoning effort は session の ACP config option 経由で適用されます: level 埋め込み variant id（`gemini-3-8-flash-low`）が advertise されていればそれを選択し、それ以外の flag 範囲内の level は session の effort 系 option（`effort`、`thought_level` など）へ送ります。
 
@@ -231,6 +239,8 @@ ln -s ~/.local/share/antigravity-acp/agy_acp_server.par ~/.local/bin/agy_acp_ser
 ```
 
 server は `~/.gemini/` 配下の Antigravity credential（Antigravity app / `agy` CLI と共通）で Google アカウント認証を行います。先にそちらでサインインしておけば、`initialize` / `session/new` は非対話で通ります。
+
+grok の `acp` transport は `cli` transport と同じ Grok Build バイナリ（`grok` または `GROK_BIN`）から `grok agent --always-approve stdio` を起動します — 別途 server のインストールは不要です。認証は `cached_token` method（`~/.grok/auth.json`）で行うため、先に `grok login`（または TUI）で一度サインインしてください。`session/new` は `models` カタログと `model` / `reasoning_effort` の config option を提示し、`setModel()` は model を選択したうえで effort を session の effort option へ適用します。effort は各 model が advertise する level（reasoning 対応 model では `low` / `medium` / `high` / `xhigh`）に対して検証されます。`default` を渡すと session 開始時の model / effort に戻ります。
 
 devin の ACP session では、`model` config option が thinking level 埋め込みの variant uid（`swe-2-high`、`claude-opus-5-5-medium`）を提示する一方、`models.json` には通常 family slug（`swe-2`、`claude-opus-5.5`）が入ります。`setModel()` / session 作成時は、effort 合成 uid（`claude-opus-5.5` + `high` → `claude-opus-5-5-high`）→ 完全一致 / dashed 化した id → family が提示する唯一の variant（`swe-2` → `swe-2-high`、`gpt-6-astra` → `gpt-6-astra-medium`）の順に解決します。残った effort は session が `thought_level` config option を持つ場合にそこへ適用します。`default` を渡すと session 開始時の model / thought level に戻ります。
 
@@ -260,7 +270,7 @@ provider 別の変換:
 | --- | --- | --- |
 | Codex | `model_reasoning_effort`（CLI `-c` / app-server `turn/start` の `effort`） | level はそのまま透過。`supported_reasoning_levels` / `supportedReasoningEfforts` で model ごとの対応を検証。`default` はパラメータ自体を送らない |
 | Claude Code | `--effort` | `low`, `medium`, `high`, `xhigh`, `max` |
-| Grok | `--effort` | `low`, `medium`, `high` |
+| Grok | `--effort`（cli）/ ACP `reasoning_effort` config option（acp） | `low`, `medium`, `high`, `xhigh`。`acp` では session の `models` カタログから model ごとの対応を検証 |
 | Agy（Gemini 系） | level 埋め込み variant id（`--model gemini-3-8-flash-low`）または `--effort` | 要求 level を持つ variant が優先。`none` は明示的な non-thinking variant（`gemini-2-5-flash-none`）にのみマップし、`minimal` へは変換しない。それ以外の flag 範囲内の level は `--effort low|medium|high` |
 | Devin | variant uid（`--model <model>-<level>`）または ACP `thought_level` | `none` は明示的な non-reasoning variant（`gpt-5-4-none`、または thinking variant と並ぶ level 無しの sibling）にのみマップ — 機械的な `<model>-none` は生成しない。その他の level も advertised variant か `thought_level` に一致する必要がある |
 
@@ -290,7 +300,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | option | description |
 | --- | --- |
 | `agent.provider` | `codex`、`claude`、`grok`、`agy`、`devin` |
-| `agent.transport` | `cli`（デフォルト）、`app-server`（codex）、`acp`（agy、devin）。Persistent sessions 参照 |
+| `agent.transport` | `cli`（デフォルト）、`app-server`（codex）、`acp`（agy、grok、devin）。Persistent sessions 参照 |
 | `agent.model` | provider に渡す model id。`default` の場合は `--model` を渡さない |
 | `agent.reasoningEffort` | 共通 effort 語彙（`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`）。`default` / 未指定は effort を送らない。非対応値は `EffortError`。Reasoning effort 参照 |
 | `prompt` | Agent CLI に渡す指示 |
@@ -305,7 +315,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | --- | --- | --- | --- |
 | Codex | `codex` or `CODEX_BIN` | `--model` | `--config model_reasoning_effort="..."` |
 | Claude Code | `claude` or `CLAUDE_BIN` | `--model` | `--effort` |
-| Grok | `grok` or `GROK_BIN` | `--model` | `--effort` |
+| Grok | `grok` or `GROK_BIN`（両 transport 共通。acp は `grok agent --always-approve stdio` を起動） | `--model`（cli）/ ACP `model` config option（acp） | `--effort low|medium|high|xhigh`（cli）/ ACP `reasoning_effort` config option（acp） |
 | Agy | `agy` or `AGY_BIN`（cli）; `agy_acp_server` or `AGY_ACP_BIN`（acp） | `--model` | level 埋め込み variant id が優先（`gemini-3-8-flash-low`）、それ以外は `--effort low|medium|high`（cli）または ACP effort config option（acp）。`none` は advertise された non-thinking variant が必要 |
 | Devin | `devin` or `DEVIN_BIN` | `--model` | model uid に折り畳む: `model` + effort は `--model <model>-<effort>` になる（例: `claude-opus-5` + `high` -> `claude-opus-5-high`）。model の明示指定が必要。advertise された variant のみ使用 — `none` は明示的な non-reasoning variant にマップ、無ければエラー |
 
@@ -316,7 +326,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | Codex | `--sandbox read-only`（ファイル書き込み不可） |
 | Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ） |
 | Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる。ツールがそれでも自動拒否された場合、Agy は stdout 空のまま exit 0 で stderr に通知を出すことがあり、そのときは失敗として扱う。`acp` transport でも同じ posture を維持する: session は編集可能な mode（`accept-edits` / `auto_edit` / `yolo`）を選択し、`session/request_permission` は自動承認される。 |
-| Grok | 特別な sandbox フラグなし |
+| Grok | 特別な sandbox フラグなし（`grok --single` の headless 実行はツール確認で停止しない）。`acp` transport も同じ posture: `grok agent` を `--always-approve` で起動し、`session/request_permission` は自動承認 |
 | Devin | `--print --respect-workspace-trust false --permission-mode auto`（read-only ツールのみ自動承認・ファイル書き込み不可）。prompt は `--` の後に渡す |
 
 ## Models Config

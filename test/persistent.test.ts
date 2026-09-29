@@ -32,6 +32,7 @@ type LogEntry = {
   id?: number | string;
   params?: Record<string, unknown>;
   result?: unknown;
+  argv?: string[];
 };
 
 async function readLog(): Promise<LogEntry[]> {
@@ -1071,6 +1072,345 @@ describe("agy acp sessions", () => {
   });
 });
 
+describe("grok acp sessions", () => {
+  async function setup(extraEnv: NodeJS.ProcessEnv = {}): Promise<{ headless: HeadlessCore }> {
+    const bin = await installFixture("fake-grok-acp.mjs");
+    const headless = createHeadlessCore({
+      env: { ...process.env, GROK_BIN: bin, FAKE_LOG: logPath, ...extraEnv }
+    });
+    return { headless };
+  }
+
+  it("spawns `grok agent --always-approve stdio` and streams message chunks", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    expect(session.id).toBe("grok-sess-1");
+
+    const events: ProgressEvent[] = [];
+    const output = await session.run({
+      prompt: "hello",
+      onProgress: (event) => {
+        events.push(event);
+      }
+    });
+    expect(output).toBe("echo:hello");
+    expect(deltasOf(events)).toBe("echo:hello");
+
+    const log = await readLog();
+    expect(log.filter((entry) => entry.method === "initialize")).toHaveLength(1);
+    expect(log.filter((entry) => entry.method === "session/new")).toHaveLength(1);
+    const spawnEntry = log.find((entry) => entry.method === "_spawn");
+    expect(spawnEntry?.argv).toEqual(["agent", "--always-approve", "stdio"]);
+
+    await session.close();
+    await headless.shutdown();
+  });
+
+  it("honors headless.run() over the acp transport", async () => {
+    const { headless } = await setup();
+    const output = await headless.run({
+      agent: { provider: "grok", transport: "acp" },
+      prompt: "oneshot"
+    });
+    expect(output).toBe("echo:oneshot");
+    await headless.shutdown();
+  });
+
+  it("reset() opens a new ACP session on the same process", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    expect(await session.run({ prompt: "first" })).toBe("echo:first");
+    const firstId = session.id;
+
+    await session.reset();
+    expect(session.id).toBe("grok-sess-2");
+    expect(await session.run({ prompt: "second" })).toBe("echo:second");
+
+    const log = await readLog();
+    expect(
+      log.some((entry) => entry.method === "session/close" && entry.params?.sessionId === firstId)
+    ).toBe(true);
+    expect(new Set(log.map((entry) => entry.pid)).size).toBe(1);
+    await headless.shutdown();
+  });
+
+  it("exposes the models catalog as available models", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    const models = await session.getAvailableModels();
+    expect(models.map((model) => model.id)).toEqual(["grok-a", "grok-b", "grok-c"]);
+    expect(models[0]?.reasoningEfforts).toEqual(["xhigh", "high", "medium", "low"]);
+    expect(models[2]?.reasoningEfforts).toBeUndefined();
+    await headless.shutdown();
+  });
+
+  it("setModel switches model and effort via session/set_config_option", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    await session.setModel("grok-b", "low");
+    const log = await readLog();
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" &&
+          entry.params?.configId === "model" &&
+          entry.params?.value === "grok-b"
+      )
+    ).toBe(true);
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" &&
+          entry.params?.configId === "reasoning_effort" &&
+          entry.params?.value === "low"
+      )
+    ).toBe(true);
+    await headless.shutdown();
+  });
+
+  it("rejects an effort the selected model does not advertise", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    // grok-b advertises only medium/low: xhigh must not be sent to the server.
+    const error = await expectEffortError(session.setModel("grok-b", "xhigh"), "UNSUPPORTED_EFFORT");
+    expect(error.supportedEfforts).toEqual(["low", "medium"]);
+    const log = await readLog();
+    expect(log.some((entry) => entry.params?.value === "xhigh")).toBe(false);
+    await headless.shutdown();
+  });
+
+  it("rejects effort on a model that does not support reasoning effort", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    const error = await expectEffortError(session.setModel("grok-c", "low"), "UNSUPPORTED_EFFORT");
+    expect(error.supportedEfforts).toEqual([]);
+    await headless.shutdown();
+  });
+
+  it("applies effort without a model via the effort option", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    await session.setModel("default", "medium");
+    const log = await readLog();
+    expect(
+      log.some(
+        (entry) =>
+          entry.method === "session/set_config_option" &&
+          entry.params?.configId === "reasoning_effort" &&
+          entry.params?.value === "medium"
+      )
+    ).toBe(true);
+    await headless.shutdown();
+  });
+
+  it("rejects an effort beyond the current model's levels", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    // "max" is valid vocabulary but outside grok-a's advertised levels.
+    const error = await expectEffortError(session.setModel("default", "max"), "UNSUPPORTED_EFFORT");
+    expect(error.supportedEfforts).toEqual(["low", "medium", "high", "xhigh"]);
+    await headless.shutdown();
+  });
+
+  it("setModel default restores the session's initial model and effort", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    await session.setModel("grok-b", "low");
+    await session.setModel("default", "default");
+    const log = await readLog();
+    const modelSets = log.filter(
+      (entry) => entry.method === "session/set_config_option" && entry.params?.configId === "model"
+    );
+    expect(modelSets.at(-1)?.params?.value).toBe("grok-a");
+    const effortSets = log.filter(
+      (entry) =>
+        entry.method === "session/set_config_option" && entry.params?.configId === "reasoning_effort"
+    );
+    expect(effortSets.at(-1)?.params?.value).toBe("high");
+    await headless.shutdown();
+  });
+
+  it("rejects an unknown model", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    await expectErrorCode(session.setModel("nope"), "PROTOCOL_ERROR");
+    await headless.shutdown();
+  });
+
+  it("rejects a model when the session exposes no model channel", async () => {
+    const { headless } = await setup({ FAKE_NO_MODELS: "1" });
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    await expectErrorCode(session.setModel("grok-b"), "PROTOCOL_ERROR");
+    expect(await session.getAvailableModels()).toEqual([]);
+    await headless.shutdown();
+  });
+
+  it("falls back to session/set_model when no model config option exists", async () => {
+    const { headless } = await setup({ FAKE_NO_MODEL_OPTION: "1" });
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    await session.setModel("grok-b");
+    const log = await readLog();
+    expect(
+      log.some(
+        (entry) => entry.method === "session/set_model" && entry.params?.modelId === "grok-b"
+      )
+    ).toBe(true);
+    // The models catalog still drives getAvailableModels.
+    expect((await session.getAvailableModels()).map((model) => model.id)).toEqual([
+      "grok-a",
+      "grok-b",
+      "grok-c"
+    ]);
+    await headless.shutdown();
+  });
+
+  it("rejects an invalid effort string before the session starts", async () => {
+    const { headless } = await setup();
+    await expectEffortError(
+      headless.createSession({
+        agent: { provider: "grok", transport: "acp", reasoningEffort: "banana" }
+      }),
+      "INVALID_EFFORT"
+    );
+    const log = await readLog();
+    expect(log.some((entry) => entry.method === "session/new")).toBe(false);
+    await headless.shutdown();
+  });
+
+  it("authenticates with the advertised default method when the server requires it", async () => {
+    const { headless } = await setup({ FAKE_AUTH: "1" });
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    expect(await session.run({ prompt: "hi" })).toBe("echo:hi");
+    const log = await readLog();
+    const authenticate = log.findIndex((entry) => entry.method === "authenticate");
+    const sessionNew = log.findIndex((entry) => entry.method === "session/new");
+    expect(authenticate).toBeGreaterThanOrEqual(0);
+    expect(authenticate).toBeLessThan(sessionNew);
+    expect(
+      (log[authenticate]?.params as { methodId?: string } | undefined)?.methodId
+    ).toBe("cached_token");
+    await headless.shutdown();
+  });
+
+  it("auto-approves permission requests like `grok --single` headless runs", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    const output = await session.run({ prompt: "PERM", timeoutMs: 5000 });
+    expect(output).toBe("perm-answered");
+    const log = await readLog();
+    const answer = log.find((entry) => entry.method === "_response_to_agent");
+    expect((answer?.result as { outcome?: { optionId?: string } })?.outcome?.optionId).toBe("allow");
+    await headless.shutdown();
+  });
+
+  it("AbortSignal cancels the prompt", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    const controller = new AbortController();
+    const pending = session.run({ prompt: "NEVER", signal: controller.signal });
+    await waitForLog((log) => log.some((entry) => entry.method === "session/prompt"));
+    controller.abort();
+
+    await expectErrorCode(pending, "REQUEST_ABORTED");
+    await waitForLog((log) => log.some((entry) => entry.method === "session/cancel"));
+    expect(await session.run({ prompt: "ok" })).toBe("echo:ok");
+    await headless.shutdown();
+  });
+
+  it("timeoutMs cancels the prompt", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    await expectErrorCode(session.run({ prompt: "SLOW", timeoutMs: 200 }), "REQUEST_TIMEOUT");
+    await waitForLog((log) => log.some((entry) => entry.method === "session/cancel"));
+    expect(await session.run({ prompt: "ok" })).toBe("echo:ok");
+    await headless.shutdown();
+  });
+
+  it("shares one process across sessions and kills it after the last close", async () => {
+    const { headless } = await setup();
+    const a = await headless.createSession({ agent: { provider: "grok", transport: "acp" } });
+    const b = await headless.createSession({ agent: { provider: "grok", transport: "acp" } });
+    expect(a.id).toBe("grok-sess-1");
+    expect(b.id).toBe("grok-sess-2");
+    expect(await a.run({ prompt: "A" })).toBe("echo:A");
+    expect(await b.run({ prompt: "B" })).toBe("echo:B");
+
+    let log = await readLog();
+    expect(log.filter((entry) => entry.method === "initialize")).toHaveLength(1);
+    expect(new Set(log.map((entry) => entry.pid)).size).toBe(1);
+
+    await a.close();
+    expect(await b.run({ prompt: "B2" })).toBe("echo:B2");
+
+    await b.close();
+    const c = await headless.createSession({ agent: { provider: "grok", transport: "acp" } });
+    expect(c.id).toBe("grok-sess-1");
+    log = await readLog();
+    expect(log.filter((entry) => entry.method === "initialize")).toHaveLength(2);
+    expect(new Set(log.map((entry) => entry.pid)).size).toBe(2);
+    await headless.shutdown();
+  });
+
+  it("run() on a closed session fails with SESSION_CLOSED", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    await session.close();
+    await expectErrorCode(session.run({ prompt: "x" }), "SESSION_CLOSED");
+    await headless.shutdown();
+  });
+
+  it("a crashed process rejects pending work and a fresh runtime starts on demand", async () => {
+    const { headless } = await setup();
+    const session = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    await expectErrorCode(session.run({ prompt: "KILL" }), "PROTOCOL_ERROR");
+    await expectErrorCode(session.run({ prompt: "again" }), "PROTOCOL_ERROR");
+
+    const fresh = await headless.createSession({
+      agent: { provider: "grok", transport: "acp" }
+    });
+    expect(await fresh.run({ prompt: "hi" })).toBe("echo:hi");
+    const log = await readLog();
+    expect(log.filter((entry) => entry.method === "initialize")).toHaveLength(2);
+    await headless.shutdown();
+  });
+});
+
 describe("transport validation and cli sessions", () => {
   it("rejects unsupported provider/transport combinations", async () => {
     const headless = createHeadlessCore({ env: { ...process.env } });
@@ -1080,6 +1420,10 @@ describe("transport validation and cli sessions", () => {
     );
     await expectErrorCode(
       headless.createSession({ agent: { provider: "agy", transport: "app-server" } }),
+      "UNSUPPORTED_TRANSPORT"
+    );
+    await expectErrorCode(
+      headless.createSession({ agent: { provider: "grok", transport: "app-server" } }),
       "UNSUPPORTED_TRANSPORT"
     );
     await expectErrorCode(

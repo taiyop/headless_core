@@ -10,6 +10,7 @@ import {
 } from "./codexAppServer.js";
 import { DevinAcpRuntime, DevinAcpSession, devinAcpRuntimeKey } from "./devinAcp.js";
 import { devinModelWithEffort, resolveDevinModel } from "./devinModel.js";
+import { GrokAcpRuntime, GrokAcpSession, grokAcpRuntimeKey } from "./grokAcp.js";
 import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
 import { EffortError } from "./errors.js";
 import { agyModelIds, codexModelEffortLevels, devinModelVariantUids } from "./modelCatalog.js";
@@ -39,7 +40,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** Effort levels each provider's own effort flag accepts. */
 const CLAUDE_SUPPORTED_EFFORTS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
-const GROK_SUPPORTED_EFFORTS: readonly EffortLevel[] = ["low", "medium", "high"];
+const GROK_SUPPORTED_EFFORTS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh"];
 
 type CommandSpec = {
   command: string;
@@ -96,6 +97,11 @@ async function createSession(ctx: SessionContext, options: CreateSessionOptions)
       const key = agyAcpRuntimeKey(ctx.env);
       const runtime = await ctx.manager.acquire(key, () => AgyAcpRuntime.start(ctx));
       return AgyAcpSession.create(runtime, ctx, agent, () => ctx.manager.release(key, runtime));
+    }
+    if (agent.provider === "grok") {
+      const key = grokAcpRuntimeKey(ctx.env);
+      const runtime = await ctx.manager.acquire(key, () => GrokAcpRuntime.start(ctx));
+      return GrokAcpSession.create(runtime, ctx, agent, () => ctx.manager.release(key, runtime));
     }
     const key = devinAcpRuntimeKey(ctx.env);
     const runtime = await ctx.manager.acquire(key, () => DevinAcpRuntime.start(ctx));

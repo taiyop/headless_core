@@ -22,7 +22,7 @@ const fallbackReasoningEffortOptionsByAgent = {
   codex: ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"],
   claude: ["default", "low", "medium", "high", "xhigh", "max"],
   agy: ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"],
-  grok: ["default", "low", "medium", "high"],
+  grok: ["default", "low", "medium", "high", "xhigh"],
   devin: ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]
 };
 

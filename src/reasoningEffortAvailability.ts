@@ -22,7 +22,10 @@ const REASONING_EFFORT_OPTIONS_BY_AGENT = {
   // thinking-off "none", so the whole vocabulary is selectable; support is
   // resolved against the `agy models` variant catalog at run time.
   agy: [DEFAULT_REASONING_EFFORT_ID, "none", "minimal", "low", "medium", "high", "xhigh", "max"],
-  grok: [DEFAULT_REASONING_EFFORT_ID, "low", "medium", "high"],
+  // `grok --effort` accepts low|medium|high|xhigh (same list the ACP
+  // `reasoning_effort` session option advertises); `none`/`minimal`/`max` are
+  // rejected by the flag itself, so they are not offered.
+  grok: [DEFAULT_REASONING_EFFORT_ID, "low", "medium", "high", "xhigh"],
   // Devin has no separate effort flag; the effort is folded into the model
   // uid suffix (e.g. model "claude-opus-5" + effort "high" ->
   // --model claude-opus-5-high). Variant uids span the full level range
