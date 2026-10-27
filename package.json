@@ -28,6 +28,7 @@
     "prepack": "npm run build"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.311",
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2",
     "vitest": "^4.1.9"
@@ -41,5 +42,13 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": ">=0.3.311"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    }
   }
 }

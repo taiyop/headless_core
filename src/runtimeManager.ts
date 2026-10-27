@@ -29,6 +29,7 @@ export interface PersistentRuntime {
 
 const PERSISTENT_TRANSPORTS: Partial<Record<string, readonly AgentTransport[]>> = {
   codex: ["app-server"],
+  claude: ["sdk"],
   agy: ["acp"],
   grok: ["acp"],
   devin: ["acp"]

@@ -27,9 +27,11 @@ const sharedModelsPath = path.join(homedir(), ".config", "headless-core", "model
 const agents = ["codex", "claude", "agy", "grok", "devin"];
 // Persistent transports per provider (see "Persistent sessions" in the main
 // README): codex app-server, agy_acp_server, grok agent stdio, and devin acp
-// keep one process alive across runs.
+// keep one process alive across runs; claude sdk keeps a Claude Agent SDK
+// query alive per session.
 const transportsByAgent = {
   codex: ["cli", "app-server"],
+  claude: ["cli", "sdk"],
   agy: ["cli", "acp"],
   grok: ["cli", "acp"],
   devin: ["cli", "acp"]

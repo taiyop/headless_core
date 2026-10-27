@@ -163,6 +163,7 @@ const session = await headless.createSession({
 | `agy` | `acp` | `agy_acp_server`（stdio 上の Agent Client Protocol） |
 | `grok` | `acp` | `grok agent --always-approve stdio`（stdio 上の Agent Client Protocol） |
 | `devin` | `acp` | `devin acp`（stdio 上の Agent Client Protocol） |
+| `claude` | `sdk` | Claude Agent SDK の streaming input query（`@anthropic-ai/claude-agent-sdk`） |
 | 任意 | `cli`（デフォルト） | `run()` ごとの one-shot spawn |
 
 同一の provider / transport / binary を使う session は 1 つの OS プロセスを共有し、各 session は独立した会話（codex では thread、agy / devin では ACP session）を持ちます。同一 session への `run()` は直列化され、別 session 同士は並行実行できます。最後の session が `close()` されるとプロセスは終了します。
@@ -209,11 +210,28 @@ const agy = await headless.createSession({
 await agy.run({ prompt: "Hello" });
 await agy.close();
 
+// Claude は Claude Agent SDK 経由（`npm install @anthropic-ai/claude-agent-sdk`）:
+const claude = await headless.createSession({
+  agent: { provider: "claude", transport: "sdk", model: "sonnet", reasoningEffort: "high" }
+});
+await claude.run({ prompt: "Hello" });
+await claude.close();
+
 // この core が持つ常駐プロセスを全て終了:
 await headless.shutdown();
 ```
 
 `session.run()` は `prompt`、`signal`（`AbortSignal`）、`timeoutMs`、`onProgress` を受け付け、`headless.run()` と同じ progress event を返します。abort / timeout はリモート側の turn をキャンセルするため（`turn/interrupt` / `session/cancel`）、session は再利用可能なままです。権限 posture は各 provider の CLI 経路と同等です: codex の thread は `sandbox: "read-only"` + `approvalPolicy: "never"` で動き（approval request は自動で拒否）、devin session は回答専用の `ask` モードを選択し permission request はデフォルトで拒否、grok session は `grok agent --always-approve` で動き（`grok --single` の headless 実行がツールの確認で停止しないのと同等）し permission request を自動承認、agy session は server が提示する中で最も強い編集 mode（`accept-edits` / `auto_edit` / `yolo` — build ごとに名称が異なる）を選択し、permission request を自動承認します（`agy --print --dangerously-skip-permissions` と同等）。
+
+#### Claude Agent SDK（`sdk`）
+
+claude の `sdk` transport は [`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk) を streaming input モードで動かします。SDK は初回利用時に読み込まれる **optional peer dependency** なので、この transport を使う場合は `@headless-core/core` と一緒にインストールしてください。
+
+```sh
+npm install @anthropic-ai/claude-agent-sdk
+```
+
+他の常駐 transport と異なり、`sdk` session は session ごとに Claude Code プロセス（会話ごとに 1 つの SDK query）を持ちます。`reset()` は query を作り直し、session id も変わります。認証は SDK / Claude Code の規則に従います（`ANTHROPIC_API_KEY`、または既存の Claude Code ログイン）。headless posture は claude の `cli` 経路（`--tools ""`）と同じで、built-in tool は無効（`tools: []`）、`permissionMode: "dontAsk"` で事前許可のない操作は拒否、`persistSession: false` で会話はメモリ上にのみ保持します。`setModel()` は query の `setModel()` を呼び、effort は `applyFlagSettings({ effortLevel })` で適用します。`default` を渡すとそれぞれの上書きを解除します。`getAvailableModels()` は SDK の `supportedModels()` を返し、effort は送信前に各 model の `supportedEffortLevels` で検証されます。
 
 agy の `acp` transport は `agy` CLI ではなく、独立バイナリの `agy_acp_server`（ACP レジストリの `antigravity-acp`）を起動します。`AGY_ACP_BIN`、または PATH 上の `agy_acp_server` / `agy_acp_server.par`（Windows は `agy_acp_server.exe`）から解決されます。model と reasoning effort は session の ACP config option 経由で適用されます: level 埋め込み variant id（`gemini-3-8-flash-low`）が advertise されていればそれを選択し、それ以外の flag 範囲内の level は session の effort 系 option（`effort`、`thought_level` など）へ送ります。
 
@@ -269,7 +287,7 @@ provider 別の変換:
 | provider | 仕組み | 備考 |
 | --- | --- | --- |
 | Codex | `model_reasoning_effort`（CLI `-c` / app-server `turn/start` の `effort`） | level はそのまま透過。`supported_reasoning_levels` / `supportedReasoningEfforts` で model ごとの対応を検証。`default` はパラメータ自体を送らない |
-| Claude Code | `--effort` | `low`, `medium`, `high`, `xhigh`, `max` |
+| Claude Code | `--effort`（cli）/ Agent SDK の `effort` option と `effortLevel` flag setting（sdk） | `low`, `medium`, `high`, `xhigh`, `max`。`sdk` では `supportedModels()` の model ごとの対応 level で検証 |
 | Grok | `--effort`（cli）/ ACP `reasoning_effort` config option（acp） | `low`, `medium`, `high`, `xhigh`。`acp` では session の `models` カタログから model ごとの対応を検証 |
 | Agy（Gemini 系） | level 埋め込み variant id（`--model gemini-3-8-flash-low`）または `--effort` | 要求 level を持つ variant が優先。`none` は明示的な non-thinking variant（`gemini-2-5-flash-none`）にのみマップし、`minimal` へは変換しない。それ以外の flag 範囲内の level は `--effort low|medium|high` |
 | Devin | variant uid（`--model <model>-<level>`）または ACP `thought_level` | `none` は明示的な non-reasoning variant（`gpt-5-4-none`、または thinking variant と並ぶ level 無しの sibling）にのみマップ — 機械的な `<model>-none` は生成しない。その他の level も advertised variant か `thought_level` に一致する必要がある |
@@ -300,7 +318,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | option | description |
 | --- | --- |
 | `agent.provider` | `codex`、`claude`、`grok`、`agy`、`devin` |
-| `agent.transport` | `cli`（デフォルト）、`app-server`（codex）、`acp`（agy、grok、devin）。Persistent sessions 参照 |
+| `agent.transport` | `cli`（デフォルト）、`app-server`（codex）、`acp`（agy、grok、devin）、`sdk`（claude）。Persistent sessions 参照 |
 | `agent.model` | provider に渡す model id。`default` の場合は `--model` を渡さない |
 | `agent.reasoningEffort` | 共通 effort 語彙（`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`）。`default` / 未指定は effort を送らない。非対応値は `EffortError`。Reasoning effort 参照 |
 | `prompt` | Agent CLI に渡す指示 |
@@ -314,7 +332,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | agent | binary | model option | reasoning effort |
 | --- | --- | --- | --- |
 | Codex | `codex` or `CODEX_BIN` | `--model` | `--config model_reasoning_effort="..."` |
-| Claude Code | `claude` or `CLAUDE_BIN` | `--model` | `--effort` |
+| Claude Code | `claude` or `CLAUDE_BIN`（cli）; `@anthropic-ai/claude-agent-sdk`（sdk） | `--model`（cli）/ SDK の `model` option（sdk） | `--effort`（cli）/ SDK の `effort` option（sdk） |
 | Grok | `grok` or `GROK_BIN`（両 transport 共通。acp は `grok agent --always-approve stdio` を起動） | `--model`（cli）/ ACP `model` config option（acp） | `--effort low|medium|high|xhigh`（cli）/ ACP `reasoning_effort` config option（acp） |
 | Agy | `agy` or `AGY_BIN`（cli）; `agy_acp_server` or `AGY_ACP_BIN`（acp） | `--model` | level 埋め込み variant id が優先（`gemini-3-8-flash-low`）、それ以外は `--effort low|medium|high`（cli）または ACP effort config option（acp）。`none` は advertise された non-thinking variant が必要 |
 | Devin | `devin` or `DEVIN_BIN` | `--model` | model uid に折り畳む: `model` + effort は `--model <model>-<effort>` になる（例: `claude-opus-5` + `high` -> `claude-opus-5-high`）。model の明示指定が必要。advertise された variant のみ使用 — `none` は明示的な non-reasoning variant にマップ、無ければエラー |
@@ -324,7 +342,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | agent | Headless 時の挙動 |
 | --- | --- |
 | Codex | `--sandbox read-only`（ファイル書き込み不可） |
-| Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ） |
+| Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ）。`sdk` transport も同じ posture（`tools: []` と `permissionMode: "dontAsk"`） |
 | Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる。ツールがそれでも自動拒否された場合、Agy は stdout 空のまま exit 0 で stderr に通知を出すことがあり、そのときは失敗として扱う。`acp` transport でも同じ posture を維持する: session は編集可能な mode（`accept-edits` / `auto_edit` / `yolo`）を選択し、`session/request_permission` は自動承認される。 |
 | Grok | 特別な sandbox フラグなし（`grok --single` の headless 実行はツール確認で停止しない）。`acp` transport も同じ posture: `grok agent` を `--always-approve` で起動し、`session/request_permission` は自動承認 |
 | Devin | `--print --respect-workspace-trust false --permission-mode auto`（read-only ツールのみ自動承認・ファイル書き込み不可）。prompt は `--` の後に渡す |
@@ -382,6 +400,7 @@ node dist/cli.js models inspect        # 全プロバイダーを inspect して
 
 - Node.js 20+
 - 利用する Agent CLI がローカル環境にインストール済みであること
+- claude の `sdk` transport を使う場合は `@anthropic-ai/claude-agent-sdk`（optional peer dependency）が必要
 - agy の `acp` transport を使う場合は、公式の `agy_acp_server` バイナリが別途必要（[インストール手順](#agy_acp_server-のインストール)）
 - macOS / Linux 推奨
 - Windows は未検証

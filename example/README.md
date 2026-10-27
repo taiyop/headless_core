@@ -2,7 +2,7 @@
 
 `headless_core` の `getAvailableModels({ agent })` と `createHeadlessCore().run()` / `createSession()` を使い、共有設定にある model と `default` を選べる最小チャットUIです。Codex / Claude を選んだ場合は、実行時 option として `reasoningEffort` も選べます。
 
-`Transport` で実行経路を切り替えられます。Codex は `cli` / `app-server`、Agy は `cli` / `acp`、Devin は `cli` / `acp` を選べるので、`codex app-server` や `agy_acp_server` / `devin acp` の永続 session 動作もこのUIから試せます。
+`Transport` で実行経路を切り替えられます。Codex は `cli` / `app-server`、Claude は `cli` / `sdk`、Agy / Grok / Devin は `cli` / `acp` を選べるので、`codex app-server` や Claude Agent SDK、`agy_acp_server` / `grok agent stdio` / `devin acp` の永続 session 動作もこのUIから試せます。
 
 ## Run
 
@@ -46,6 +46,8 @@ npm run example
 | agent | transport | 実行方法 |
 | --- | --- | --- |
 | Codex | `cli` / `app-server` | `codex exec` の1回起動 / `codex app-server` 常駐プロセス上の thread |
+| Claude | `cli` / `sdk` | `claude --print` の1回起動 / Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) の常駐 query |
+| Grok | `cli` / `acp` | `grok --single` の1回起動 / `grok agent stdio` 常駐プロセス上の ACP session |
 | Agy | `cli` / `acp` | `agy --print` の1回起動 / `agy_acp_server` 常駐プロセス上の ACP session |
 | Devin | `cli` / `acp` | `devin --print` の1回起動 / `devin acp` 常駐プロセス上の ACP session |
 | その他 | `cli` | 1回起動のみ |
@@ -55,8 +57,9 @@ npm run example
 - session 使用中に model / reasoningEffort を変えて送信すると `session.setModel()` で切り替わります。devin では family slug (`swe-2`, `claude-opus-5.5`) と effort が runtime の提供する variant uid (`swe-2-high`, `claude-opus-5-5-medium`) に自動で解決され、解決できない model id は session 側の error として表示されます。
 - devin では transport によって使える effort が異なります。`cli` は `devin models list` の全 variant (`gpt-6-luna-none` 等) を解決できますが、`acp` は session の `model` config option が提示する subset (`gpt-6-luna-medium` のみ等) に限られ、option 外の値は ACP が拒否します。例: `gpt-6-luna` + `none` は `cli` では動きますが `acp` では `UNSUPPORTED_EFFORT` になります。
 - 永続 session の初回 run 後、`session.getAvailableModels()` が返す model id を dropdown に merge します(codex `model/list` / ACP session の `model` config option)。models.json に無い runtime 側の実際の候補をそのまま試せます。
+- claude の `sdk` transport は `@anthropic-ai/claude-agent-sdk` を使います。リポジトリでは devDependency として入っているので `npm install` 後そのまま選べます。認証は Claude Code と同じ（`ANTHROPIC_API_KEY` または既存の Claude Code ログイン）です。`cli` と同じく tool は無効で、テキスト入出力のみです。初回 run 後は SDK の `supportedModels()` が返す model id（`default` / `sonnet` / `opus` など）が dropdown に merge されます。
 - agy の `acp` transport は `agy` CLI ではなく別バイナリの `agy_acp_server` を起動します(PATH 上の `agy_acp_server` / `agy_acp_server.par`、または `AGY_ACP_BIN` で指定)。未インストールの場合は [setup wiki](https://github.com/taiyop/headless_core/wiki/Antigravity-ACP-Server-(agy_acp_server)-%E3%81%AE%E3%82%BB%E3%83%83%E3%83%88%E3%82%A2%E3%83%83%E3%83%97) の手順で公式バイナリを入れてください。権限 prompt は `agy --print --dangerously-skip-permissions` と同じく自動承認され、session は編集可能な mode（`accept-edits` / `auto_edit` / `yolo`）を選択します。
-- `New chat` は browser 側の履歴をクリアし、永続 transport では `session.reset()` で同じ process 上に新しい会話を始めます。status 行に現在の session id (codex thread id / ACP session id) を表示します。
+- `New chat` は browser 側の履歴をクリアし、永続 transport では `session.reset()` で同じ process 上に新しい会話を始めます。status 行に現在の session id (codex thread id / ACP session id / Agent SDK session id) を表示します。
 - server を Ctrl+C などで終了すると、開いている session を close して常駐 process も終了します。
 
 ## Notes

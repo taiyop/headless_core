@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { AgyAcpRuntime, AgyAcpSession, agyAcpRuntimeKey } from "./agyAcp.js";
 import { resolveAgyEffort } from "./agyModel.js";
+import { ClaudeSdkSession } from "./claudeSdk.js";
 import { CliSession } from "./cliSession.js";
 import {
   CodexAppServerRuntime,
@@ -90,6 +91,10 @@ async function createSession(ctx: SessionContext, options: CreateSessionOptions)
     const key = codexAppServerRuntimeKey(ctx.env);
     const runtime = await ctx.manager.acquire(key, () => CodexAppServerRuntime.start(ctx));
     return CodexAppServerSession.create(runtime, ctx, agent, () => ctx.manager.release(key, runtime));
+  }
+
+  if (transport === "sdk") {
+    return ClaudeSdkSession.create(ctx, agent);
   }
 
   if (transport === "acp") {

@@ -46,8 +46,10 @@ export type GetAvailableReasoningEffortOptionsOptions = {
  * - `app-server`: persistent `codex app-server` process (codex only).
  * - `acp`: persistent Agent Client Protocol process — `devin acp` for devin,
  *   `agy_acp_server` for agy, `grok agent --always-approve stdio` for grok.
+ * - `sdk`: persistent Claude Agent SDK query (`@anthropic-ai/claude-agent-sdk`,
+ *   claude only). The SDK is an optional peer dependency.
  */
-export type AgentTransport = "cli" | "app-server" | "acp";
+export type AgentTransport = "cli" | "app-server" | "acp" | "sdk";
 
 export type AgentSpec = {
   provider: string;
@@ -77,7 +79,7 @@ export type HeadlessCoreConfig = {
 export type HeadlessCore = {
   run(options: HeadlessRunOptions): Promise<string>;
   /**
-   * Opens a persistent session when `agent.transport` is `app-server` or `acp`,
+   * Opens a persistent session when `agent.transport` is `app-server`, `acp` or `sdk`,
    * or a stateless CLI-backed session when `transport` is `cli`/omitted.
    */
   createSession(options: CreateSessionOptions): Promise<HeadlessSession>;
@@ -120,7 +122,7 @@ export type ModelCandidate = {
 export type HeadlessSession = {
   readonly provider: string;
   readonly transport: AgentTransport;
-  /** Remote conversation id (codex thread id / ACP session id), or null. */
+  /** Remote conversation id (codex thread id / ACP session id / Agent SDK session id), or null. */
   readonly id: string | null;
   run(options: HeadlessSessionRunOptions): Promise<string>;
   /** Starts a fresh conversation on the same runtime, dropping prior history. */
