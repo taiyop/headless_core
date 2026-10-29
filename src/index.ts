@@ -9,6 +9,7 @@ export {
   type ToolsErrorCode
 } from "./errors.js";
 export { createHeadlessCore } from "./headlessCore.js";
+export { TOOL_OUTPUT_LIMIT, TOOL_TITLE_LIMIT } from "./progress.js";
 export { getAvailableReasoningEffortOptions } from "./reasoningEffortAvailability.js";
 export { getAvailableModels } from "./modelAvailability.js";
 export {
@@ -17,6 +18,7 @@ export {
   DEFAULT_REASONING_EFFORT_ID,
   DEFAULT_MODEL_ID,
   EFFORT_LEVELS,
+  TOOL_KINDS,
   TOOL_PERMISSION_MODES,
   type AgentId,
   type AgentSpec,
@@ -40,12 +42,16 @@ export {
   type HeadlessSessionRunOptions,
   type ModelCandidate,
   type ModelsConfig,
+  type PlanEntry,
+  type PlanEntryStatus,
   type ProgressEvent,
   type ProgressSnapshot,
   type RunState,
+  type ToolKind,
   type ToolPermissionMode,
   type ToolsSpec,
   type ToolUseEvent,
+  type ToolUseLocation,
   type ToolUseStatus,
   type UsagePeriod,
   type UsageWindow

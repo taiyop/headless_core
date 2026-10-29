@@ -256,8 +256,23 @@ export type ProgressEvent = {
    * - `failed`: whatever output was collected before the failure.
    */
   partialOutput?: string;
-  /** Set on `running` events that report a tool call (claude with `agent.tools`). */
+  /**
+   * Set on `running` events that carry an incremental chunk (delta) of the
+   * agent's thinking, including summarized reasoning. Never part of the final
+   * output, and never set on the same event as `partialOutput`.
+   */
+  thought?: string;
+  /**
+   * Set on `running` events that report a tool call: commands, file reads and
+   * edits, searches and fetches. Emitted by every provider/transport that
+   * exposes tool calls (see the README support table).
+   */
   toolUse?: ToolUseEvent;
+  /**
+   * Set on `running` events when the agent's work plan changes. Always the
+   * full current plan (a snapshot), not a diff.
+   */
+  plan?: PlanEntry[];
   error?: HeadlessError;
   agent?: AgentSpec;
 };
@@ -269,17 +284,53 @@ export type ProgressEvent = {
  */
 export type ToolUseStatus = "started" | "completed" | "failed" | "denied";
 
+/**
+ * Provider-neutral category of a tool call, aligned with the Agent Client
+ * Protocol ToolKind (`switch_mode` maps to `other`).
+ */
+export const TOOL_KINDS = ["read", "edit", "delete", "move", "search", "execute", "think", "fetch", "other"] as const;
+export type ToolKind = (typeof TOOL_KINDS)[number];
+
+export type ToolUseLocation = {
+  path: string;
+  line?: number;
+};
+
+/**
+ * One tool call update. Consumers should merge events by `id`: `started` may
+ * be sent more than once for the same call when its title or input becomes
+ * known later, and exactly one terminal event (`completed`/`failed`/`denied`)
+ * follows.
+ */
 export type ToolUseEvent = {
   /** Tool use id, shared by every event of one call. */
   id: string;
+  /** Provider-native tool name (or the ACP title when the agent reports no name). */
   name: string;
   status: ToolUseStatus;
+  kind?: ToolKind;
+  /** One-line human-readable summary, e.g. `git status`, `src/index.ts`, a search query. */
+  title?: string;
+  /** Files the call reads or changes. */
+  locations?: ToolUseLocation[];
   /** Tool input, on `started`. */
   input?: unknown;
-  /** Tool result text (`completed`/`failed`) or the denial reason (`denied`). */
+  /**
+   * Tool result text (`completed`/`failed`) or the denial reason (`denied`),
+   * truncated to TOOL_OUTPUT_LIMIT characters.
+   */
   output?: string;
   /** Set when the call ran inside a subagent. */
   parentToolUseId?: string;
+};
+
+export type PlanEntryStatus = "pending" | "in_progress" | "completed";
+
+export type PlanEntry = {
+  content: string;
+  status: PlanEntryStatus;
+  /** Provider-reported priority (e.g. ACP `high`/`medium`/`low`), when any. */
+  priority?: string;
 };
 
 export type ProgressSnapshot = {
