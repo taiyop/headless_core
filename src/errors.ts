@@ -61,3 +61,23 @@ export class EffortError extends Error {
     this.supportedEfforts = details?.supportedEfforts ?? [];
   }
 }
+
+export type ToolsErrorCode = "INVALID_TOOLS" | "UNSUPPORTED_TOOLS";
+
+/**
+ * Raised when `agent.tools` cannot be honored:
+ *
+ * - `INVALID_TOOLS`: the spec is malformed (non-string tool names or rules,
+ *   or an unknown permissionMode).
+ * - `UNSUPPORTED_TOOLS`: the provider does not support opt-in tools (every
+ *   provider except claude). The spec is never silently ignored.
+ */
+export class ToolsError extends Error {
+  readonly code: ToolsErrorCode;
+
+  constructor(code: ToolsErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ToolsError";
+    this.code = code;
+  }
+}

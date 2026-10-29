@@ -3,6 +3,7 @@ import {
   createHeadlessCore,
   EffortError,
   HeadlessSessionError,
+  ToolsError,
   type HeadlessCore,
   type ProgressEvent
 } from "../src/index.js";
@@ -43,6 +44,41 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
             interrupted = resolve;
           });
           yield { type: "result", subtype: "error_during_execution", is_error: true, errors: [], session_id: sessionId };
+          continue;
+        }
+        if (text === "tool") {
+          yield {
+            type: "assistant",
+            parent_tool_use_id: null,
+            message: {
+              content: [
+                { type: "tool_use", id: "t1", name: "Bash", input: { command: "git clone x" } },
+                { type: "tool_use", id: "t2", name: "Bash", input: { command: "rm -rf /" } }
+              ]
+            },
+            session_id: sessionId
+          };
+          yield {
+            type: "system",
+            subtype: "permission_denied",
+            tool_name: "Bash",
+            tool_use_id: "t2",
+            message: "denied by dontAsk",
+            session_id: sessionId
+          };
+          yield {
+            type: "user",
+            parent_tool_use_id: null,
+            message: {
+              role: "user",
+              content: [
+                { type: "tool_result", tool_use_id: "t2", content: "denied by dontAsk", is_error: true },
+                { type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "cloned" }] }
+              ]
+            },
+            session_id: sessionId
+          };
+          yield { type: "result", subtype: "success", is_error: false, result: "done", session_id: sessionId };
           continue;
         }
         if (text === "fail") {
@@ -233,6 +269,82 @@ describe("claude sdk sessions", () => {
     await headless.createSession({ agent: { provider: "claude", transport: "sdk" } });
     await headless.shutdown();
     expect(fake.queries[0]!.closed).toBe(true);
+  });
+
+  it("maps agent.tools onto SDK tool and permission options", async () => {
+    await headless.createSession({
+      agent: {
+        provider: "claude",
+        transport: "sdk",
+        tools: { allow: ["Bash", "Read", "WebFetch"], allowedRules: ["Bash(git clone:*)"] }
+      }
+    });
+    expect(fake.queries[0]!.options).toMatchObject({
+      tools: ["Bash", "Read", "WebFetch"],
+      permissionMode: "dontAsk",
+      allowedTools: ["Bash(git clone:*)"],
+      permissionPrompts: "none"
+    });
+    expect(fake.queries[0]!.options.allowDangerouslySkipPermissions).toBeUndefined();
+
+    await headless.createSession({
+      agent: { provider: "claude", transport: "sdk", tools: { allow: ["Bash"], permissionMode: "bypassPermissions" } }
+    });
+    expect(fake.queries[1]!.options).toMatchObject({
+      tools: ["Bash"],
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true
+    });
+    expect(fake.queries[1]!.options.allowedTools).toBeUndefined();
+  });
+
+  it("keeps the text-only posture when tools.allow is empty", async () => {
+    await headless.createSession({ agent: { provider: "claude", transport: "sdk", tools: { allow: [] } } });
+    expect(fake.queries[0]!.options).toMatchObject({ tools: [], permissionMode: "dontAsk" });
+    expect(fake.queries[0]!.options.permissionPrompts).toBeUndefined();
+  });
+
+  it("reports tool calls as toolUse progress events", async () => {
+    const session = await headless.createSession({
+      agent: { provider: "claude", transport: "sdk", tools: { allow: ["Bash"] } }
+    });
+    const events: ProgressEvent[] = [];
+    await expect(session.run({ prompt: "tool", onProgress: (event) => void events.push(event) })).resolves.toBe("done");
+    expect(events.flatMap((event) => (event.toolUse ? [event.toolUse] : []))).toEqual([
+      { id: "t1", name: "Bash", status: "started", input: { command: "git clone x" } },
+      { id: "t2", name: "Bash", status: "started", input: { command: "rm -rf /" } },
+      { id: "t2", name: "Bash", status: "denied", output: "denied by dontAsk" },
+      { id: "t1", name: "Bash", status: "completed", output: "cloned" }
+    ]);
+    expect(events.find((event) => event.toolUse)).toMatchObject({ state: "running", message: "Bash started" });
+  });
+
+  it("passes CLAUDE_SDK_BIN and the per-session cwd to the SDK", async () => {
+    const core = createHeadlessCore({ cwd: "/base", env: { ...process.env, CLAUDE_SDK_BIN: "/usr/local/bin/claude" } });
+    try {
+      await core.createSession({ agent: { provider: "claude", transport: "sdk" }, cwd: "/work/conv-1" });
+      await core.run({ agent: { provider: "claude", transport: "sdk" }, prompt: "x" });
+      expect(fake.queries[0]!.options).toMatchObject({
+        pathToClaudeCodeExecutable: "/usr/local/bin/claude",
+        cwd: "/work/conv-1"
+      });
+      expect(fake.queries[1]!.options.cwd).toBe("/base");
+    } finally {
+      await core.shutdown();
+    }
+    await headless.createSession({ agent: { provider: "claude", transport: "sdk" } });
+    expect(fake.queries[2]!.options.pathToClaudeCodeExecutable).toBeUndefined();
+  });
+
+  it("rejects malformed tools before starting a query", async () => {
+    const error = await headless
+      .createSession({
+        agent: { provider: "claude", transport: "sdk", tools: { allow: ["Bash"], permissionMode: "default" as never } }
+      })
+      .catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ToolsError);
+    expect((error as ToolsError).code).toBe("INVALID_TOOLS");
+    expect(fake.queries).toHaveLength(0);
   });
 
   it("rejects the sdk transport for other providers", async () => {

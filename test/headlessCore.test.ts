@@ -136,6 +136,7 @@ describe("createHeadlessCore", () => {
       "opus",
       "--effort",
       "xhigh",
+      "--",
       "hello"
     ]);
   });

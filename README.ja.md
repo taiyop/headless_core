@@ -8,7 +8,8 @@ Claude Code、Codex、Grok、Agy、Devin などのローカル CLI を、同じ 
 
 - Claude Code / Codex / Grok / Agy / Devin の CLI 実行
 - TypeScript API
-- `stdout` / `stderr` の途中出力を `onProgress` で通知
+- 途中出力（と claude のツール呼び出し）を `onProgress` で通知
+- claude のツール使用をオプトインで有効化（リポジトリの clone、ファイル読み取り、Web 取得）
 - `timeoutMs` と `AbortSignal` による停止
 - provider 別の model / reasoning effort option 変換
 - 失敗分類と fallback hook
@@ -231,7 +232,7 @@ claude の `sdk` transport は [`@anthropic-ai/claude-agent-sdk`](https://www.np
 npm install @anthropic-ai/claude-agent-sdk
 ```
 
-他の常駐 transport と異なり、`sdk` session は session ごとに Claude Code プロセス（会話ごとに 1 つの SDK query）を持ちます。`reset()` は query を作り直し、session id も変わります。認証は SDK / Claude Code の規則に従います（`ANTHROPIC_API_KEY`、または既存の Claude Code ログイン）。headless posture は claude の `cli` 経路（`--tools ""`）と同じで、built-in tool は無効（`tools: []`）、`permissionMode: "dontAsk"` で事前許可のない操作は拒否、`persistSession: false` で会話はメモリ上にのみ保持します。`setModel()` は query の `setModel()` を呼び、effort は `applyFlagSettings({ effortLevel })` で適用します。`default` を渡すとそれぞれの上書きを解除します。`getAvailableModels()` は SDK の `supportedModels()` を返し、effort は送信前に各 model の `supportedEffortLevels` で検証されます。
+他の常駐 transport と異なり、`sdk` session は session ごとに Claude Code プロセス（会話ごとに 1 つの SDK query）を持ちます。`reset()` は query を作り直し、session id も変わります。認証は SDK / Claude Code の規則に従います（`ANTHROPIC_API_KEY`、または既存の Claude Code ログイン）。headless posture は claude の `cli` 経路（`--tools ""`）と同じで、built-in tool は無効（`tools: []`）、`permissionMode: "dontAsk"` で事前許可のない操作は拒否、`persistSession: false` で会話はメモリ上にのみ保持します（ツールを有効にする場合はツール使用（claude）参照）。`CLAUDE_SDK_BIN` にインストール済みの `claude` を指定すると、SDK 同梱の実行ファイルの代わりにそれを使います（`pathToClaudeCodeExecutable`）。`setModel()` は query の `setModel()` を呼び、effort は `applyFlagSettings({ effortLevel })` で適用します。`default` を渡すとそれぞれの上書きを解除します。`getAvailableModels()` は SDK の `supportedModels()` を返し、effort は送信前に各 model の `supportedEffortLevels` で検証されます。
 
 agy の `acp` transport は `agy` CLI ではなく、独立バイナリの `agy_acp_server`（ACP レジストリの `antigravity-acp`）を起動します。`AGY_ACP_BIN`、または PATH 上の `agy_acp_server` / `agy_acp_server.par`（Windows は `agy_acp_server.exe`）から解決されます。model と reasoning effort は session の ACP config option 経由で適用されます: level 埋め込み variant id（`gemini-3-8-flash-low`）が advertise されていればそれを選択し、それ以外の flag 範囲内の level は session の effort 系 option（`effort`、`thought_level` など）へ送ります。
 
@@ -261,6 +262,62 @@ server は `~/.gemini/` 配下の Antigravity credential（Antigravity app / `ag
 grok の `acp` transport は `cli` transport と同じ Grok Build バイナリ（`grok` または `GROK_BIN`）から `grok agent --always-approve stdio` を起動します — 別途 server のインストールは不要です。認証は `cached_token` method（`~/.grok/auth.json`）で行うため、先に `grok login`（または TUI）で一度サインインしてください。`session/new` は `models` カタログと `model` / `reasoning_effort` の config option を提示し、`setModel()` は model を選択したうえで effort を session の effort option へ適用します。effort は各 model が advertise する level（reasoning 対応 model では `low` / `medium` / `high` / `xhigh`）に対して検証されます。`default` を渡すと session 開始時の model / effort に戻ります。
 
 devin の ACP session では、`model` config option が thinking level 埋め込みの variant uid（`swe-2-high`、`claude-opus-5-5-medium`）を提示する一方、`models.json` には通常 family slug（`swe-2`、`claude-opus-5.5`）が入ります。`setModel()` / session 作成時は、effort 合成 uid（`claude-opus-5.5` + `high` → `claude-opus-5-5-high`）→ 完全一致 / dashed 化した id → family が提示する唯一の variant（`swe-2` → `swe-2-high`、`gpt-6-astra` → `gpt-6-astra-medium`）の順に解決します。残った effort は session が `thought_level` config option を持つ場合にそこへ適用します。`default` を渡すと session 開始時の model / thought level に戻ります。
+
+## Progress events
+
+`onProgress` は `ProgressEvent` を受け取ります（`headless.run()` と `session.run()` で共通）。
+
+| state | `partialOutput` | 備考 |
+| --- | --- | --- |
+| `starting` | — | `message` に provider 名 |
+| `running` | **差分**（その時点までの累積ではない）。chunk を連結するとストリーミングされた出力になる | ツール呼び出しは `toolUse` 付きの `running` event で届く（`agent.tools` を指定した claude） |
+| `completed` | 最終出力の全文（戻り値と同じ） | |
+| `failed` | 失敗までに得られた出力 | timeout / abort の `error.kind` は `agent_stopped` |
+| `fallback` | — | `onFallback` を実行する直前 |
+
+## ツール使用（claude）
+
+既定ではすべての実行がテキスト入出力のみです。claude は `--tools ""`（cli）/ `tools: []`（sdk）で起動するため、リポジトリの clone や Web の閲覧はできません。`agent.tools` を指定すると有効になります。
+
+```ts
+const output = await headless.run({
+  agent: {
+    provider: "claude",
+    tools: {
+      allow: ["Bash", "Read", "Grep", "Glob", "WebFetch"],
+      permissionMode: "dontAsk",
+      allowedRules: ["Bash(git clone:*)", "WebFetch(domain:github.com)"]
+    }
+  },
+  prompt: "https://github.com/owner/repo を clone して README の要点を述べて",
+  cwd: "/path/to/workspaces/conversation-42",
+  timeoutMs: 600_000,
+  onProgress(event) {
+    if (event.toolUse) {
+      console.log(event.toolUse.status, event.toolUse.name, event.toolUse.input ?? event.toolUse.output);
+    } else if (event.partialOutput && event.state === "running") {
+      process.stdout.write(event.partialOutput);
+    }
+  }
+});
+```
+
+| field | 説明 |
+| --- | --- |
+| `allow` | 使える組み込みツール。`tools` 未指定、または `allow` が空なら従来どおりテキストのみ（引数も従来と同一） |
+| `permissionMode` | `dontAsk`（既定）: 事前許可された呼び出しだけ実行。`acceptEdits`: さらに `cwd` 内のファイル編集を許可。`bypassPermissions`: 権限チェックなし |
+| `allowedRules` | 事前許可ルール（claude の `--allowedTools`）。例: `Bash(git clone:*)`。複合コマンド（`cd x && git clone ...`）は `git clone` のルールに一致しない |
+
+| transport | 変換 |
+| --- | --- |
+| `cli` | `--output-format stream-json --verbose --include-partial-messages --tools <allow を "," 区切り> --permission-mode <mode> --permission-prompts none [--allowedTools <rules...>] -- <prompt>` |
+| `sdk` | `tools`、`permissionMode`、`allowedTools`、`permissionPrompts: "none"`（`bypassPermissions` のときは `allowDangerouslySkipPermissions` も） |
+
+- 許可待ちで止まることはありません。許可されていない操作はその場で拒否され、Claude にその旨が伝わって実行が続きます。拒否は `status: "denied"` の `toolUse` event として通知され、run は正常に完了します。一方 timeout は `error.kind: "agent_stopped"` で失敗するため区別できます。
+- `toolUse` event: `started`（`input` 付き）→ `completed` / `failed`（ツール側のエラー、`output` 付き）または `denied`（理由が `output`）。subagent 内の呼び出しには `parentToolUseId` が付きます。`partialOutput` に流れるのはトップレベルのテキストだけ（subagent のテキストは除外）で、`result` メッセージが最終出力になります。
+- エージェントの作業場所は `cwd` です。`HeadlessCoreConfig.cwd`、または `run()` / `createSession()` ごとの `cwd`（会話ごとに clone 先を分ける場合など）。`cli` transport が `stream-json` を使うのはツール有効時のみで、テキストのみの実行は `--output-format text` のままです。
+- claude 以外の provider に `agent.tools` を渡すと `ToolsError`（`UNSUPPORTED_TOOLS`）、形式が不正なら `INVALID_TOOLS` になります。どちらも `onFallback` には回りません。
+- ツールを使う実行はテキスト回答より時間がかかるため、`timeoutMs` を長めにしてください。
 
 ## Reasoning effort
 
@@ -309,7 +366,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 
 | option | description |
 | --- | --- |
-| `cwd` | Agent CLI を実行する作業ディレクトリ |
+| `cwd` | Agent CLI を実行する作業ディレクトリ。`run()` / `createSession()` の `cwd` で呼び出しごとに上書きできる |
 | `timeoutMs` | デフォルトの実行 timeout。未指定時は 120 秒 |
 | `env` | Agent CLI に渡す環境変数 |
 
@@ -321,8 +378,10 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | `agent.transport` | `cli`（デフォルト）、`app-server`（codex）、`acp`（agy、grok、devin）、`sdk`（claude）。Persistent sessions 参照 |
 | `agent.model` | provider に渡す model id。`default` の場合は `--model` を渡さない |
 | `agent.reasoningEffort` | 共通 effort 語彙（`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`）。`default` / 未指定は effort を送らない。非対応値は `EffortError`。Reasoning effort 参照 |
+| `agent.tools` | ツール使用のオプトイン（claude のみ）: `{ allow, permissionMode?, allowedRules? }`。未指定ならツールなし。ツール使用（claude）参照 |
 | `prompt` | Agent CLI に渡す指示 |
-| `onProgress` | 状態変化と途中出力の callback |
+| `cwd` | この実行の作業ディレクトリ（`createHeadlessCore({ cwd })` を上書き） |
+| `onProgress` | 状態変化と途中出力の callback。Progress events 参照 |
 | `onFallback` | 失敗時の fallback callback |
 | `signal` | 実行を中断する `AbortSignal` |
 | `timeoutMs` | この実行だけの timeout |
@@ -332,7 +391,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | agent | binary | model option | reasoning effort |
 | --- | --- | --- | --- |
 | Codex | `codex` or `CODEX_BIN` | `--model` | `--config model_reasoning_effort="..."` |
-| Claude Code | `claude` or `CLAUDE_BIN`（cli）; `@anthropic-ai/claude-agent-sdk`（sdk） | `--model`（cli）/ SDK の `model` option（sdk） | `--effort`（cli）/ SDK の `effort` option（sdk） |
+| Claude Code | `claude` or `CLAUDE_BIN`（cli）; `@anthropic-ai/claude-agent-sdk`（sdk。`CLAUDE_SDK_BIN` で使う `claude` 本体を指定） | `--model`（cli）/ SDK の `model` option（sdk） | `--effort`（cli）/ SDK の `effort` option（sdk） |
 | Grok | `grok` or `GROK_BIN`（両 transport 共通。acp は `grok agent --always-approve stdio` を起動） | `--model`（cli）/ ACP `model` config option（acp） | `--effort low|medium|high|xhigh`（cli）/ ACP `reasoning_effort` config option（acp） |
 | Agy | `agy` or `AGY_BIN`（cli）; `agy_acp_server` or `AGY_ACP_BIN`（acp） | `--model` | level 埋め込み variant id が優先（`gemini-3-8-flash-low`）、それ以外は `--effort low|medium|high`（cli）または ACP effort config option（acp）。`none` は advertise された non-thinking variant が必要 |
 | Devin | `devin` or `DEVIN_BIN` | `--model` | model uid に折り畳む: `model` + effort は `--model <model>-<effort>` になる（例: `claude-opus-5` + `high` -> `claude-opus-5-high`）。model の明示指定が必要。advertise された variant のみ使用 — `none` は明示的な non-reasoning variant にマップ、無ければエラー |
@@ -342,7 +401,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | agent | Headless 時の挙動 |
 | --- | --- |
 | Codex | `--sandbox read-only`（ファイル書き込み不可） |
-| Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ）。`sdk` transport も同じ posture（`tools: []` と `permissionMode: "dontAsk"`） |
+| Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ）。`sdk` transport も同じ posture（`tools: []` と `permissionMode: "dontAsk"`）。`agent.tools` でツールを有効にでき、その場合も許可待ちで止まらない（ツール使用（claude）参照）。prompt は `--` の後に渡す |
 | Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる。ツールがそれでも自動拒否された場合、Agy は stdout 空のまま exit 0 で stderr に通知を出すことがあり、そのときは失敗として扱う。`acp` transport でも同じ posture を維持する: session は編集可能な mode（`accept-edits` / `auto_edit` / `yolo`）を選択し、`session/request_permission` は自動承認される。 |
 | Grok | 特別な sandbox フラグなし（`grok --single` の headless 実行はツール確認で停止しない）。`acp` transport も同じ posture: `grok agent` を `--always-approve` で起動し、`session/request_permission` は自動承認 |
 | Devin | `--print --respect-workspace-trust false --permission-mode auto`（read-only ツールのみ自動承認・ファイル書き込み不可）。prompt は `--` の後に渡す |

@@ -8,7 +8,8 @@ It allows you to run local CLIs such as Claude Code, Codex, Grok, Agy, and Devin
 
 - CLI execution for Claude Code / Codex / Grok / Agy / Devin
 - TypeScript API
-- Progress notifications for intermediate `stdout` / `stderr` outputs via `onProgress`
+- Progress notifications for intermediate output (and claude tool calls) via `onProgress`
+- Opt-in tool use for claude (clone repositories, read files, fetch the web)
 - Cancellation using `timeoutMs` and `AbortSignal`
 - Provider-specific model and reasoning effort option conversion
 - Failure classification and fallback hooks
@@ -256,11 +257,67 @@ The claude `sdk` transport runs [`@anthropic-ai/claude-agent-sdk`](https://www.n
 npm install @anthropic-ai/claude-agent-sdk
 ```
 
-Unlike the other persistent transports, each `sdk` session owns its own Claude Code process (one SDK query per conversation); `reset()` replaces that query and the session id changes. Authentication follows the SDK/Claude Code rules (`ANTHROPIC_API_KEY`, or an existing Claude Code login). The headless posture matches the claude `cli` path (`--tools ""`): built-in tools are disabled (`tools: []`), `permissionMode: "dontAsk"` denies anything not pre-approved, and `persistSession: false` keeps conversations in memory only. `setModel()` calls the query's `setModel()` and applies effort through `applyFlagSettings({ effortLevel })`; `default` clears either override. `getAvailableModels()` returns the SDK's `supportedModels()` catalog, and efforts are validated against each model's `supportedEffortLevels` before they are sent.
+Unlike the other persistent transports, each `sdk` session owns its own Claude Code process (one SDK query per conversation); `reset()` replaces that query and the session id changes. Authentication follows the SDK/Claude Code rules (`ANTHROPIC_API_KEY`, or an existing Claude Code login). The headless posture matches the claude `cli` path (`--tools ""`): built-in tools are disabled (`tools: []`), `permissionMode: "dontAsk"` denies anything not pre-approved, and `persistSession: false` keeps conversations in memory only (see Tool use to opt in to tools). Set `CLAUDE_SDK_BIN` to an installed `claude` to run it instead of the executable bundled with the SDK (`pathToClaudeCodeExecutable`). `setModel()` calls the query's `setModel()` and applies effort through `applyFlagSettings({ effortLevel })`; `default` clears either override. `getAvailableModels()` returns the SDK's `supportedModels()` catalog, and efforts are validated against each model's `supportedEffortLevels` before they are sent.
 
 The grok `acp` transport spawns `grok agent --always-approve stdio` from the same Grok Build binary the `cli` transport uses (`grok` or `GROK_BIN`) — no separate server to install. It authenticates with the `cached_token` method (`~/.grok/auth.json`), so run `grok login` (or use the TUI) once first. `session/new` advertises a `models` catalog plus `model`/`reasoning_effort` config options: `setModel()` selects the model and applies the effort through the session's effort option, validated against the levels each model advertises (`low`/`medium`/`high`/`xhigh` on reasoning models). Passing `default` restores the model/effort the session started with.
 
 For devin ACP sessions the `model` config option advertises variant uids that embed the thinking level (`swe-2-high`, `claude-opus-5-5-medium`), while `models.json` typically holds family slugs (`swe-2`, `claude-opus-5.5`). `setModel()`/session creation resolve them in this order: the effort-folded uid (`claude-opus-5.5` + `high` -> `claude-opus-5-5-high`), the exact or dashed id, then the family's only advertised variant (`swe-2` -> `swe-2-high`, `gpt-6-astra` -> `gpt-6-astra-medium`). Any remaining effort is applied via the `thought_level` config option when the session offers it. Passing `default` restores the model/thought level the session started with.
+
+## Progress events
+
+`onProgress` receives `ProgressEvent`s (`headless.run()` and `session.run()` alike):
+
+| state | `partialOutput` | notes |
+| --- | --- | --- |
+| `starting` | — | `message` names the provider |
+| `running` | An **incremental chunk** (delta), not the text so far. Concatenate the chunks to rebuild the streamed output | Tool calls arrive as `running` events with `toolUse` set (claude with `agent.tools`) |
+| `completed` | The full final output (same as the resolved value) | |
+| `failed` | The output collected before the failure | `error.kind` is `agent_stopped` for timeout/abort |
+| `fallback` | — | `onFallback` is about to run |
+
+## Tool use (claude)
+
+By default every run is text-in/text-out: claude starts with `--tools ""` (cli) or `tools: []` (sdk), so it cannot clone a repository or read the web. Set `agent.tools` to opt in:
+
+```ts
+const output = await headless.run({
+  agent: {
+    provider: "claude",
+    tools: {
+      allow: ["Bash", "Read", "Grep", "Glob", "WebFetch"],
+      permissionMode: "dontAsk",
+      allowedRules: ["Bash(git clone:*)", "WebFetch(domain:github.com)"]
+    }
+  },
+  prompt: "Clone https://github.com/owner/repo and summarize its README.",
+  cwd: "/path/to/workspaces/conversation-42",
+  timeoutMs: 600_000,
+  onProgress(event) {
+    if (event.toolUse) {
+      console.log(event.toolUse.status, event.toolUse.name, event.toolUse.input ?? event.toolUse.output);
+    } else if (event.partialOutput && event.state === "running") {
+      process.stdout.write(event.partialOutput);
+    }
+  }
+});
+```
+
+| field | description |
+| --- | --- |
+| `allow` | Built-in tools to make available. Omitted `tools` or an empty `allow` keeps the text-only posture (identical arguments to before) |
+| `permissionMode` | `dontAsk` (default): only pre-approved calls run. `acceptEdits`: also accepts file edits in `cwd`. `bypassPermissions`: no permission checks |
+| `allowedRules` | Pre-approved permission rules (claude `--allowedTools`), e.g. `Bash(git clone:*)`. A compound Bash command (`cd x && git clone ...`) does not match a `git clone` rule |
+
+| transport | mapping |
+| --- | --- |
+| `cli` | `--output-format stream-json --verbose --include-partial-messages --tools <allow joined by ","> --permission-mode <mode> --permission-prompts none [--allowedTools <rules...>] -- <prompt>` |
+| `sdk` | `tools`, `permissionMode`, `allowedTools`, `permissionPrompts: "none"` (plus `allowDangerouslySkipPermissions` for `bypassPermissions`) |
+
+- A run never waits for approval: anything not allowed is denied at once, Claude is told so, and the run continues. The denial is reported as a `toolUse` event with `status: "denied"` and the run completes normally — a timeout, in contrast, fails with `error.kind: "agent_stopped"`.
+- `toolUse` events: `started` (with `input`) → `completed` / `failed` (tool error, with `output`) or `denied` (with the reason in `output`). `parentToolUseId` is set for calls made inside a subagent. Only top-level text (not subagent text) is streamed as `partialOutput`, and the `result` message becomes the final output.
+- The agent works in `cwd` — `HeadlessCoreConfig.cwd`, or the per-call `cwd` on `run()` / `createSession()` (e.g. one clone directory per conversation). The `cli` transport uses `stream-json` only when tools are enabled; text-only runs keep `--output-format text`.
+- Any other provider rejects `agent.tools` with `ToolsError` (`UNSUPPORTED_TOOLS`); a malformed spec raises `INVALID_TOOLS`. Neither is routed through `onFallback`.
+- Tool runs take longer than text answers — raise `timeoutMs` accordingly.
 
 ## Reasoning effort
 
@@ -309,7 +366,7 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 
 | option | description |
 | --- | --- |
-| `cwd` | Working directory where the Agent CLI is executed |
+| `cwd` | Working directory where the Agent CLI is executed. `run()` / `createSession()` accept `cwd` to override it per call |
 | `timeoutMs` | Default execution timeout. Defaults to 120 seconds if not specified |
 | `env` | Environment variables passed to the Agent CLI |
 
@@ -321,8 +378,10 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 | `agent.transport` | `cli` (default), `app-server` (codex), `acp` (agy, grok, devin), `sdk` (claude). See Persistent sessions |
 | `agent.model` | Model ID passed to the provider. If `default`, `--model` is not passed |
 | `agent.reasoningEffort` | Shared effort vocabulary (`default`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). `default`/omitted sends no effort; unsupported values raise `EffortError`. See Reasoning effort |
+| `agent.tools` | Opt-in tool use (claude only): `{ allow, permissionMode?, allowedRules? }`. Omitted = no tools. See Tool use |
 | `prompt` | Instructions passed to the Agent CLI |
-| `onProgress` | Callback for state changes and intermediate output |
+| `cwd` | Working directory for this run (overrides `createHeadlessCore({ cwd })`) |
+| `onProgress` | Callback for state changes and intermediate output. See Progress events |
 | `onFallback` | Fallback callback on failure |
 | `signal` | `AbortSignal` to abort execution |
 | `timeoutMs` | Timeout specific to this execution |
@@ -332,7 +391,7 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 | agent | binary | model option | reasoning effort |
 | --- | --- | --- | --- |
 | Codex | `codex` or `CODEX_BIN` | `--model` | `--config model_reasoning_effort="..."` |
-| Claude Code | `claude` or `CLAUDE_BIN` (cli); `@anthropic-ai/claude-agent-sdk` (sdk) | `--model` (cli) / SDK `model` option (sdk) | `--effort` (cli) / SDK `effort` option (sdk) |
+| Claude Code | `claude` or `CLAUDE_BIN` (cli); `@anthropic-ai/claude-agent-sdk` (sdk; `CLAUDE_SDK_BIN` selects the `claude` executable) | `--model` (cli) / SDK `model` option (sdk) | `--effort` (cli) / SDK `effort` option (sdk) |
 | Grok | `grok` or `GROK_BIN` (both transports; acp runs `grok agent --always-approve stdio`) | `--model` (cli) / ACP `model` config option (acp) | `--effort low|medium|high|xhigh` (cli) / ACP `reasoning_effort` config option (acp) |
 | Agy | `agy` or `AGY_BIN` (cli); `agy_acp_server` or `AGY_ACP_BIN` (acp) | `--model` | Level-embedded variant ids win (`gemini-3-8-flash-low`); otherwise `--effort low|medium|high` (cli) or the ACP effort config option (acp). `none` requires an advertised non-thinking variant |
 | Devin | `devin` or `DEVIN_BIN` | `--model` | Folded into the model uid: `model` + effort becomes `--model <model>-<effort>` (e.g. `claude-opus-5` + `high` -> `claude-opus-5-high`). Requires an explicit model; only advertised variants are used — `none` maps to an explicit non-reasoning variant or fails |
@@ -342,7 +401,7 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 | agent | Headless behavior |
 | --- | --- |
 | Codex | `--sandbox read-only` (no file writes) |
-| Claude Code | `--tools ""` (no tools; text-in/text-out only). The `sdk` transport keeps the same posture: `tools: []` and `permissionMode: "dontAsk"` |
+| Claude Code | `--tools ""` (no tools; text-in/text-out only). The `sdk` transport keeps the same posture: `tools: []` and `permissionMode: "dontAsk"`. `agent.tools` opts in to tools without ever waiting for approval (see Tool use). The prompt is passed after `--` |
 | Agy | `--dangerously-skip-permissions` and `--mode accept-edits` so non-interactive `--print` can run tools and write files (e.g. image generation). `--print-timeout` matches the run `timeoutMs`. If a tool is still auto-denied, Agy may exit 0 with an empty stdout and a stderr notice; that is treated as a failed run. The `acp` transport keeps the same posture: sessions select an edit-capable mode (`accept-edits`/`auto_edit`/`yolo`) and `session/request_permission` is auto-approved. |
 | Grok | No special sandbox flags (`grok --single` headless runs never pause for tool prompts). The `acp` transport keeps the same posture: `grok agent` runs with `--always-approve` and `session/request_permission` is auto-approved |
 | Devin | `--print --respect-workspace-trust false --permission-mode auto` (read-only tools auto-approved; no file writes). The prompt is passed after `--` |

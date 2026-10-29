@@ -62,6 +62,16 @@ npm run example
 - `New chat` は browser 側の履歴をクリアし、永続 transport では `session.reset()` で同じ process 上に新しい会話を始めます。status 行に現在の session id (codex thread id / ACP session id / Agent SDK session id) を表示します。
 - server を Ctrl+C などで終了すると、開いている session を close して常駐 process も終了します。
 
+## Tools (claude)
+
+`Tools` を `on` にすると、claude（`cli` / `sdk` 両方）でツール使用が有効になり、「https://github.com/xxx/yyy を clone して仕組みを解説して」のような依頼に実際の clone 結果で答えられます。claude 以外の agent では選択できません（既定は `off` で、従来どおりテキストのみ）。
+
+- `agent.tools` は `{ allow: ["Bash", "Read", "Grep", "Glob", "WebFetch", "WebSearch"], permissionMode: "dontAsk", allowedRules: ["Bash(git clone:*)", "Bash(ls:*)", "WebFetch", "WebSearch"] }` です（`example/server.mjs` の `exampleTools`）。それ以外の Bash コマンドなどは許可待ちにならず即座に拒否されます。
+- 作業ディレクトリは会話ごとに `<OS の temp>/headless-core-example/<chatId>` を作り、`run()` / `createSession()` の `cwd` に渡します。`New chat` で新しい chatId（と新しい作業ディレクトリ）になります。永続 transport では作業ディレクトリが session 作成時に固定されるため、`New chat` は `reset()` ではなく session を close して作り直します。
+- ツール有効時の timeout は 10 分です。
+- 返信の下に、そのターンのツール呼び出し（`ProgressEvent.toolUse`）を `completed Bash: git clone ...` のように表示します。`denied` / `failed` は赤で表示され、拒否理由は hover で確認できます。
+- sdk transport で SDK 同梱ではなくインストール済みの `claude` を使う場合は `CLAUDE_SDK_BIN=$(which claude) npm run example` のように起動します。
+
 ## Notes
 
 - UIはmodel idだけを表示します。

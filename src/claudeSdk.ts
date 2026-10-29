@@ -7,6 +7,7 @@ import type {
   SDKMessage,
   SDKUserMessage
 } from "@anthropic-ai/claude-agent-sdk";
+import { ClaudeToolUseTracker, describeToolUse, resolveTools, type ResolvedTools } from "./claudeTools.js";
 import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
 import { HeadlessSessionError } from "./errors.js";
 import type { PersistentRuntime, SessionContext } from "./runtimeManager.js";
@@ -35,7 +36,8 @@ let sdkModule: Promise<ClaudeSdkModule> | undefined;
  * that never use the `sdk` transport do not need it installed.
  */
 function loadClaudeSdk(): Promise<ClaudeSdkModule> {
-  sdkModule ??= import(SDK_PACKAGE).catch((cause: unknown) => {
+  // A string literal (not SDK_PACKAGE) so bundlers can include the SDK.
+  sdkModule ??= import("@anthropic-ai/claude-agent-sdk").catch((cause: unknown) => {
     sdkModule = undefined;
     throw new HeadlessSessionError(
       "RUNTIME_START_FAILED",
@@ -135,6 +137,8 @@ export class ClaudeSdkRuntime implements PersistentRuntime {
           cwd: ctx.cwd,
           env: ctx.env,
           sessionId,
+          // Use an installed `claude` instead of the executable bundled with the SDK.
+          ...(ctx.env.CLAUDE_SDK_BIN ? { pathToClaudeCodeExecutable: ctx.env.CLAUDE_SDK_BIN } : {}),
           stderr: (data) => runtime?.recordStderr(data)
         }
       });
@@ -254,7 +258,7 @@ type RuntimeLease = {
  *
  * The headless posture matches the claude `cli` transport (`--tools ""`):
  * built-in tools are disabled and anything not pre-approved is denied, so the
- * session is text-in/text-out.
+ * session is text-in/text-out — unless `agent.tools` opts in.
  */
 export class ClaudeSdkSession implements HeadlessSession {
   readonly provider = "claude";
@@ -267,6 +271,7 @@ export class ClaudeSdkSession implements HeadlessSession {
   private activeTurnOptions: HeadlessSessionRunOptions | undefined;
   private accumulated = "";
   private assistantError: string | undefined;
+  private toolUses = new ClaudeToolUseTracker();
   // Results still owed by the runtime for turns already sent. A result only
   // settles the active turn when it is the last one outstanding, so a late
   // result from an interrupted turn is never mistaken for the next answer.
@@ -274,11 +279,13 @@ export class ClaudeSdkSession implements HeadlessSession {
   private model: string | undefined;
   private effort: SdkEffortLevel | undefined;
   private models: ModelInfo[] | undefined;
+  private readonly tools: ResolvedTools | undefined;
 
   private constructor(
     private readonly ctx: SessionContext,
     private agent: AgentSpec
   ) {
+    this.tools = resolveTools(agent);
     this.model = normalizeModel(agent.model);
     this.effort = toSdkEffort(this.model, parseRequestedEffort(agent.reasoningEffort));
   }
@@ -378,10 +385,7 @@ export class ClaudeSdkSession implements HeadlessSession {
   private async startRuntime(): Promise<void> {
     const key = claudeSdkRuntimeKey();
     const options: ClaudeSdkOptions = {
-      // Text-in/text-out like `claude --print --tools ""`: no built-in tools,
-      // and anything not pre-approved is denied instead of prompting.
-      tools: [],
-      permissionMode: "dontAsk",
+      ...sdkToolOptions(this.tools),
       includePartialMessages: true,
       // Conversations live only in the running process, like the other
       // persistent transports.
@@ -428,6 +432,7 @@ export class ClaudeSdkSession implements HeadlessSession {
 
     this.accumulated = "";
     this.assistantError = undefined;
+    this.toolUses = new ClaudeToolUseTracker();
     this.activeTurnOptions = options;
     const settlement = startTurn({
       timeoutMs: options.timeoutMs ?? this.ctx.timeoutMs,
@@ -474,13 +479,19 @@ export class ClaudeSdkSession implements HeadlessSession {
       }
       return;
     }
-    if (message.type === "assistant") {
-      if (current && message.parent_tool_use_id === null && message.error) {
-        this.assistantError = message.error;
-      }
-      return;
+    if (message.type === "assistant" && current && message.parent_tool_use_id === null && message.error) {
+      this.assistantError = message.error;
     }
     if (message.type !== "result") {
+      if (current && this.activeTurn && this.activeTurnOptions) {
+        for (const toolUse of this.toolUses.events(message)) {
+          emitSessionProgress(this.activeTurnOptions, this.agent, {
+            state: "running",
+            toolUse,
+            message: describeToolUse(toolUse)
+          });
+        }
+      }
       return;
     }
     this.pendingResults = Math.max(0, this.pendingResults - 1);
@@ -545,6 +556,23 @@ export class ClaudeSdkSession implements HeadlessSession {
       throw new HeadlessSessionError("SESSION_CLOSED", "Session is closed");
     }
   }
+}
+
+/** Maps `agent.tools` onto SDK options; mirrors the cli transport's flags. */
+function sdkToolOptions(tools: ResolvedTools | undefined): ClaudeSdkOptions {
+  if (!tools) {
+    // Text-in/text-out like `claude --print --tools ""`: no built-in tools,
+    // and anything not pre-approved is denied instead of prompting.
+    return { tools: [], permissionMode: "dontAsk" };
+  }
+  return {
+    tools: tools.allow,
+    permissionMode: tools.permissionMode,
+    ...(tools.allowedRules.length ? { allowedTools: tools.allowedRules } : {}),
+    ...(tools.permissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
+    // No canUseTool handler: deny anything that would prompt instead of waiting.
+    permissionPrompts: "none"
+  };
 }
 
 /** Narrows a common effort level to the SDK's vocabulary; none/minimal have no SDK equivalent. */

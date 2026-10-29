@@ -3,6 +3,7 @@ const agentSelect = document.querySelector("#agent");
 const transportSelect = document.querySelector("#transport");
 const modelSelect = document.querySelector("#model");
 const reasoningEffortSelect = document.querySelector("#reasoning-effort");
+const toolsSelect = document.querySelector("#tools");
 const statusEl = document.querySelector("#status");
 const elapsedEl = document.querySelector("#elapsed");
 const chatEl = document.querySelector("#chat");
@@ -17,6 +18,8 @@ const inspectOutputEl = document.querySelector("#inspect-output");
 
 let modelsByAgent = {};
 let elapsedTimerId = null;
+// Identifies the chat's tool workspace on the server; a new chat gets a new one.
+let chatId = crypto.randomUUID();
 const messages = [];
 const fallbackReasoningEffortOptionsByAgent = {
   codex: ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"],
@@ -42,6 +45,7 @@ agentSelect.addEventListener("change", () => {
   renderTransportOptions();
   renderModelOptions();
   renderReasoningEffortOptions();
+  renderToolsOption();
 });
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -65,6 +69,7 @@ async function loadModels() {
     renderTransportOptions();
     renderModelOptions();
     renderReasoningEffortOptions();
+    renderToolsOption();
     const configError = Object.values(modelsByAgent).find((entry) => entry?.error)?.error;
     setStatus(configError ?? `Models loaded from ${data.modelsPath}.`, Boolean(configError));
   } catch (error) {
@@ -82,11 +87,12 @@ async function sendMessage() {
   const transport = transportSelect.value;
   const model = modelSelect.value;
   const reasoningEffort = reasoningEffortSelect.value;
+  const tools = toolsEnabled();
   messages.push({ role: "user", content });
   renderMessages();
   messageInput.value = "";
   setStatus(
-    `Running ${agent} (${transport}) with ${model}${reasoningEffort ? ` / ${reasoningEffort}` : ""}...`
+    `Running ${agent} (${transport}) with ${model}${reasoningEffort ? ` / ${reasoningEffort}` : ""}${tools ? " + tools" : ""}...`
   );
   sendButton.disabled = true;
 
@@ -102,7 +108,9 @@ async function sendMessage() {
         transport,
         model,
         reasoningEffort,
-        messages,
+        tools,
+        chatId,
+        messages: messages.map(({ role, content }) => ({ role, content })),
         source: modelsSourceSelect.value
       })
     });
@@ -112,11 +120,13 @@ async function sendMessage() {
     messages.push({
       role: "assistant",
       content: data.reply || "(empty response)",
-      elapsedMs: performance.now() - startedAt
+      elapsedMs: performance.now() - startedAt,
+      toolUses: data.toolUses
     });
     renderMessages();
     mergeRuntimeModels(agent, data.models);
-    setStatus(data.sessionId ? `Ready. session: ${data.sessionId}` : "Ready.");
+    const workspace = data.workspace ? ` workspace: ${data.workspace}` : "";
+    setStatus(`${data.sessionId ? `Ready. session: ${data.sessionId}` : "Ready."}${workspace}`);
   } catch (error) {
     messages.push({
       role: "assistant",
@@ -166,6 +176,7 @@ async function runInspect() {
       renderTransportOptions();
       renderModelOptions();
       renderReasoningEffortOptions();
+      renderToolsOption();
     }
   } catch (error) {
     inspectCodeEl.textContent = "";
@@ -192,6 +203,7 @@ function renderAgentOptions() {
 
 async function startNewChat() {
   messages.length = 0;
+  chatId = crypto.randomUUID();
   renderMessages();
 
   const transport = transportSelect.value;
@@ -204,11 +216,11 @@ async function startNewChat() {
     const response = await fetch("/api/session/reset", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent: agentSelect.value, transport })
+      body: JSON.stringify({ agent: agentSelect.value, transport, tools: toolsEnabled() })
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? "Session reset failed");
-    setStatus(data.reset ? `Session reset. session: ${data.sessionId}` : "Ready.");
+    setStatus(data.reset ? `Session reset.${data.sessionId ? ` session: ${data.sessionId}` : ""}` : "Ready.");
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -278,6 +290,19 @@ function renderReasoningEffortOptions() {
   reasoningEffortSelect.value = "";
 }
 
+// Tools are claude-only; other agents keep the select disabled at "off".
+function renderToolsOption() {
+  const supported = agentSelect.value === "claude";
+  toolsSelect.disabled = !supported;
+  if (!supported) {
+    toolsSelect.value = "off";
+  }
+}
+
+function toolsEnabled() {
+  return !toolsSelect.disabled && toolsSelect.value === "on";
+}
+
 function getReasoningEffortOptions(agent) {
   const options = modelsByAgent[agent]?.reasoningEffortOptions;
   if (Array.isArray(options) && options.length > 0) {
@@ -294,6 +319,20 @@ function renderMessages() {
     const body = document.createElement("div");
     body.textContent = message.content;
     node.append(body);
+    if (Array.isArray(message.toolUses) && message.toolUses.length > 0) {
+      const tools = document.createElement("ul");
+      tools.className = "tool-uses";
+      for (const toolUse of message.toolUses) {
+        const item = document.createElement("li");
+        item.className = `tool-use ${toolUse.status}`;
+        item.textContent = `${toolUse.status} ${toolUse.name}${formatToolInput(toolUse.input)}`;
+        if (toolUse.status === "denied" && toolUse.output) {
+          item.title = toolUse.output;
+        }
+        tools.append(item);
+      }
+      node.append(tools);
+    }
     if (message.elapsedMs != null) {
       const meta = document.createElement("div");
       meta.className = "message-meta";
@@ -303,6 +342,12 @@ function renderMessages() {
     chatEl.append(node);
   }
   chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function formatToolInput(input) {
+  if (!input || typeof input !== "object") return "";
+  const value = input.command ?? input.url ?? input.file_path ?? input.pattern ?? input.query;
+  return typeof value === "string" ? `: ${value}` : "";
 }
 
 function startElapsedTimer(startedAt) {

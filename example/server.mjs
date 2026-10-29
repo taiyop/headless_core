@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -36,9 +37,19 @@ const transportsByAgent = {
   grok: ["cli", "acp"],
   devin: ["cli", "acp"]
 };
+// Tools toggle (claude only, see "Tool use" in the main README). Clones and
+// file reads stay inside a per-chat workspace under the OS temp dir; anything
+// not listed in allowedRules is denied instead of waiting for approval.
+const exampleTools = {
+  allow: ["Bash", "Read", "Grep", "Glob", "WebFetch", "WebSearch"],
+  permissionMode: "dontAsk",
+  allowedRules: ["Bash(git clone:*)", "Bash(ls:*)", "WebFetch", "WebSearch"]
+};
+const toolsTimeoutMs = 600_000;
+const workspaceRoot = path.join(tmpdir(), "headless-core-example");
 const exampleBinDir = path.join(__dirname, "bin");
 let inspectedModelsByAgent = null;
-// key: `${agent}:${transport}` -> Promise<{ session, hasHistory }>. The promise
+// key: `${agent}:${transport}:${tools}` -> Promise<{ session, hasHistory }>. The promise
 // is stored so concurrent first sends share one createSession call.
 const sessions = new Map();
 // Models reported by live sessions (session.getAvailableModels()), keyed by
@@ -158,9 +169,13 @@ async function runChat(body) {
   const rawReasoningEffort = asString(body.reasoningEffort);
   const reasoningEffort = rawReasoningEffort === DEFAULT_REASONING_EFFORT_ID ? "" : rawReasoningEffort;
   const messages = Array.isArray(body.messages) ? body.messages : [];
+  const tools = body.tools === true;
 
   if (!agents.includes(agent)) {
     throw new Error(`Unsupported agent: ${agent}`);
+  }
+  if (tools && agent !== "claude") {
+    throw new Error("Tools are supported only for claude");
   }
   const supportedTransports = transportsByAgent[agent] ?? ["cli"];
   if (!supportedTransports.includes(transport)) {
@@ -179,20 +194,54 @@ async function runChat(body) {
     throw new Error(`Model "${model}" is not available for ${agent}`);
   }
 
+  const toolOptions = tools ? await toolRunOptions(asString(body.chatId)) : undefined;
+
   if (transport !== "cli") {
-    return runSessionChat({ agent, transport, model, reasoningEffort, messages });
+    return runSessionChat({ agent, transport, model, reasoningEffort, messages, toolOptions });
   }
 
   const prompt = buildPrompt(messages);
+  const toolUses = new ToolUseLog();
   const reply = await headless.run({
     agent: {
       provider: agent,
       model,
-      ...(reasoningEffort ? { reasoningEffort } : {})
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(toolOptions ? { tools: exampleTools } : {})
     },
-    prompt
+    prompt,
+    ...(toolOptions ? { cwd: toolOptions.cwd, timeoutMs: toolsTimeoutMs, onProgress: toolUses.onProgress } : {})
   });
-  return { reply };
+  return { reply, toolUses: toolUses.list(), ...(toolOptions ? { workspace: toolOptions.cwd } : {}) };
+}
+
+/** Per-chat workspace: the agent clones and reads files there. */
+async function toolRunOptions(chatId) {
+  const safeId = chatId.replace(/[^A-Za-z0-9_-]/g, "") || "default";
+  const cwd = path.join(workspaceRoot, safeId);
+  await mkdir(cwd, { recursive: true });
+  return { cwd };
+}
+
+/** Collects ProgressEvent.toolUse into one entry per tool call for the UI. */
+class ToolUseLog {
+  #calls = new Map();
+
+  onProgress = (event) => {
+    const toolUse = event.toolUse;
+    if (!toolUse) return;
+    const previous = this.#calls.get(toolUse.id);
+    this.#calls.set(toolUse.id, {
+      name: toolUse.name,
+      status: toolUse.status,
+      input: previous?.input ?? toolUse.input,
+      ...(toolUse.output !== undefined ? { output: toolUse.output.slice(0, 500) } : {})
+    });
+  };
+
+  list() {
+    return [...this.#calls.values()];
+  }
 }
 
 /**
@@ -201,8 +250,8 @@ async function runChat(body) {
  * first turn of a new session carries the transcript for context, later turns
  * send only the latest user message.
  */
-async function runSessionChat({ agent, transport, model, reasoningEffort, messages }) {
-  const key = `${agent}:${transport}`;
+async function runSessionChat({ agent, transport, model, reasoningEffort, messages, toolOptions }) {
+  const key = sessionKey(agent, transport, Boolean(toolOptions));
   let entryPromise = sessions.get(key);
   let created = false;
   if (!entryPromise) {
@@ -213,10 +262,12 @@ async function runSessionChat({ agent, transport, model, reasoningEffort, messag
           provider: agent,
           transport,
           model,
-          ...(reasoningEffort ? { reasoningEffort } : {})
-        }
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+          ...(toolOptions ? { tools: exampleTools } : {})
+        },
+        ...(toolOptions ? { cwd: toolOptions.cwd } : {})
       })
-      .then((session) => ({ session, hasHistory: false }));
+      .then((session) => ({ session, hasHistory: false, workspace: toolOptions?.cwd }));
     sessions.set(key, entryPromise);
     // Failed startups must not poison later sends.
     entryPromise.catch(() => {
@@ -236,13 +287,23 @@ async function runSessionChat({ agent, transport, model, reasoningEffort, messag
   // Mark before running so a concurrent send on a fresh session does not also
   // transmit the full transcript.
   entry.hasHistory = true;
+  const toolUses = new ToolUseLog();
   try {
-    const reply = await entry.session.run({ prompt });
+    const reply = await entry.session.run({
+      prompt,
+      ...(toolOptions ? { timeoutMs: toolsTimeoutMs, onProgress: toolUses.onProgress } : {})
+    });
     const models = await sessionModelIds(entry.session);
     if (models.length > 0) {
       runtimeModelsByAgent.set(agent, models);
     }
-    return { reply, sessionId: entry.session.id, models };
+    return {
+      reply,
+      sessionId: entry.session.id,
+      models,
+      toolUses: toolUses.list(),
+      ...(entry.workspace ? { workspace: entry.workspace } : {})
+    };
   } catch (error) {
     // A failed turn may leave the runtime dead; drop the session so the next
     // message starts a fresh conversation.
@@ -257,11 +318,18 @@ async function runSessionChat({ agent, transport, model, reasoningEffort, messag
 async function resetSession(body) {
   const agent = asString(body.agent);
   const transport = asString(body.transport) || "cli";
-  const key = `${agent}:${transport}`;
+  const key = sessionKey(agent, transport, body.tools === true);
   const entryPromise = sessions.get(key);
   const entry = await entryPromise?.catch(() => undefined);
   if (!entry) {
     return { reset: false };
+  }
+  if (entry.workspace) {
+    // The workspace is fixed when a session is created, so a new chat with
+    // tools gets a new session (and a new workspace) instead of reset().
+    sessions.delete(key);
+    await entry.session.close().catch(() => undefined);
+    return { reset: true, sessionId: null };
   }
   try {
     await entry.session.reset();
@@ -274,6 +342,10 @@ async function resetSession(body) {
     await entry.session.close().catch(() => undefined);
     throw error;
   }
+}
+
+function sessionKey(agent, transport, tools) {
+  return `${agent}:${transport}:${tools ? "tools" : "text"}`;
 }
 
 async function sessionModelIds(session) {

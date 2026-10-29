@@ -68,6 +68,37 @@ export type AgentSpec = {
    * opening a short-lived session; `createSession()` reuses them across runs.
    */
   transport?: AgentTransport;
+  /**
+   * Opt-in tool use (agent execution). claude only — any other provider
+   * rejects it with a ToolsError (UNSUPPORTED_TOOLS). When omitted (or when
+   * `allow` is empty) the run stays text-in/text-out with every tool
+   * disabled, exactly as before.
+   */
+  tools?: ToolsSpec;
+};
+
+/**
+ * Permission modes accepted for tool runs. None of them ever waits for an
+ * approval: anything not allowed is denied immediately and reported as a
+ * `denied` ToolUseEvent, so a headless run cannot stall on a prompt.
+ *
+ * - `dontAsk`: only tools/rules that are pre-approved run; everything else is denied.
+ * - `acceptEdits`: like `dontAsk`, but file edits in the working directory are also accepted.
+ * - `bypassPermissions`: every allowed tool runs without permission checks.
+ */
+export const TOOL_PERMISSION_MODES = ["dontAsk", "acceptEdits", "bypassPermissions"] as const;
+export type ToolPermissionMode = (typeof TOOL_PERMISSION_MODES)[number];
+
+export type ToolsSpec = {
+  /** Built-in tools to make available, e.g. ["Bash", "Read", "Grep", "Glob", "WebFetch", "WebSearch"]. */
+  allow: string[];
+  /** Defaults to `dontAsk`. */
+  permissionMode?: ToolPermissionMode;
+  /**
+   * Pre-approved permission rules (claude `--allowedTools`), e.g.
+   * ["Bash(git clone:*)", "WebFetch(domain:github.com)"].
+   */
+  allowedRules?: string[];
 };
 
 export type HeadlessCoreConfig = {
@@ -93,6 +124,11 @@ export type HeadlessCore = {
 
 export type CreateSessionOptions = {
   agent: AgentSpec;
+  /**
+   * Working directory for this session, overriding HeadlessCoreConfig.cwd.
+   * With tools enabled this is where the agent reads, writes and clones.
+   */
+  cwd?: string;
 };
 
 export type HeadlessSessionRunOptions = {
@@ -145,6 +181,11 @@ export type HeadlessRunOptions = {
   onFallback?: FallbackHook;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /**
+   * Working directory for this run, overriding HeadlessCoreConfig.cwd.
+   * With tools enabled this is where the agent reads, writes and clones.
+   */
+  cwd?: string;
 };
 
 export type RunState = "starting" | "running" | "fallback" | "completed" | "failed";
@@ -152,9 +193,37 @@ export type RunState = "starting" | "running" | "fallback" | "completed" | "fail
 export type ProgressEvent = {
   state: RunState;
   message?: string;
+  /**
+   * - `running`: an incremental chunk (delta) of output. Concatenate the
+   *   chunks to rebuild the text streamed so far.
+   * - `completed`: the full final output.
+   * - `failed`: whatever output was collected before the failure.
+   */
   partialOutput?: string;
+  /** Set on `running` events that report a tool call (claude with `agent.tools`). */
+  toolUse?: ToolUseEvent;
   error?: HeadlessError;
   agent?: AgentSpec;
+};
+
+/**
+ * Lifecycle of a tool call:
+ * `started` -> `completed` | `failed` (the tool ran and reported an error) | `denied`
+ * (blocked by the permission mode or rules; the run continues).
+ */
+export type ToolUseStatus = "started" | "completed" | "failed" | "denied";
+
+export type ToolUseEvent = {
+  /** Tool use id, shared by every event of one call. */
+  id: string;
+  name: string;
+  status: ToolUseStatus;
+  /** Tool input, on `started`. */
+  input?: unknown;
+  /** Tool result text (`completed`/`failed`) or the denial reason (`denied`). */
+  output?: string;
+  /** Set when the call ran inside a subagent. */
+  parentToolUseId?: string;
 };
 
 export type ProgressSnapshot = {

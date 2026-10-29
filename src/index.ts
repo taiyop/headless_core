@@ -2,9 +2,11 @@ export {
   EffortError,
   HeadlessSessionError,
   ModelAvailabilityError,
+  ToolsError,
   type EffortErrorCode,
   type HeadlessSessionErrorCode,
-  type ModelAvailabilityErrorCode
+  type ModelAvailabilityErrorCode,
+  type ToolsErrorCode
 } from "./errors.js";
 export { createHeadlessCore } from "./headlessCore.js";
 export { getAvailableReasoningEffortOptions } from "./reasoningEffortAvailability.js";
@@ -15,6 +17,7 @@ export {
   DEFAULT_REASONING_EFFORT_ID,
   DEFAULT_MODEL_ID,
   EFFORT_LEVELS,
+  TOOL_PERMISSION_MODES,
   type AgentId,
   type AgentSpec,
   type AgentTransport,
@@ -37,5 +40,9 @@ export {
   type ModelsConfig,
   type ProgressEvent,
   type ProgressSnapshot,
-  type RunState
+  type RunState,
+  type ToolPermissionMode,
+  type ToolsSpec,
+  type ToolUseEvent,
+  type ToolUseStatus
 } from "./types.js";

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { AgyAcpRuntime, AgyAcpSession, agyAcpRuntimeKey } from "./agyAcp.js";
 import { resolveAgyEffort } from "./agyModel.js";
 import { ClaudeSdkSession } from "./claudeSdk.js";
+import { ClaudeToolUseTracker, describeToolUse, resolveTools, type ResolvedTools } from "./claudeTools.js";
 import { CliSession } from "./cliSession.js";
 import {
   CodexAppServerRuntime,
@@ -13,7 +14,7 @@ import { DevinAcpRuntime, DevinAcpSession, devinAcpRuntimeKey } from "./devinAcp
 import { devinModelWithEffort, resolveDevinModel } from "./devinModel.js";
 import { GrokAcpRuntime, GrokAcpSession, grokAcpRuntimeKey } from "./grokAcp.js";
 import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
-import { EffortError } from "./errors.js";
+import { EffortError, ToolsError } from "./errors.js";
 import { agyModelIds, codexModelEffortLevels, devinModelVariantUids } from "./modelCatalog.js";
 import {
   RuntimeManager,
@@ -46,6 +47,8 @@ const GROK_SUPPORTED_EFFORTS: readonly EffortLevel[] = ["low", "medium", "high",
 type CommandSpec = {
   command: string;
   args: string[];
+  /** stdout is Claude Code `--output-format stream-json` (claude with tools enabled). */
+  claudeStream?: boolean;
 };
 
 type RunFailure = {
@@ -56,8 +59,8 @@ type RunFailure = {
 
 export function createHeadlessCore(config: HeadlessCoreConfig = {}): HeadlessCore {
   const manager = new RuntimeManager();
-  const contextFor = (): SessionContext => ({
-    cwd: config.cwd ?? process.cwd(),
+  const contextFor = (cwd?: string): SessionContext => ({
+    cwd: cwd ?? config.cwd ?? process.cwd(),
     env: config.env ?? process.env,
     timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     manager
@@ -65,10 +68,10 @@ export function createHeadlessCore(config: HeadlessCoreConfig = {}): HeadlessCor
 
   return {
     async run(options) {
-      return runWithFallback(contextFor(), options);
+      return runWithFallback(contextFor(options.cwd), options);
     },
     async createSession(options) {
-      return createSession(contextFor(), options);
+      return createSession(contextFor(options.cwd), options);
     },
     async shutdown() {
       await manager.shutdown();
@@ -86,6 +89,7 @@ async function createSession(ctx: SessionContext, options: CreateSessionOptions)
   }
   const transport = resolveTransport(agent);
   validateTransport(agent.provider, transport);
+  resolveTools(agent);
 
   if (transport === "app-server") {
     const key = codexAppServerRuntimeKey(ctx.env);
@@ -126,9 +130,9 @@ async function runWithFallback(ctx: SessionContext, options: HeadlessRunOptions)
     try {
       return await runOnce(ctx, { ...options, agent, prompt });
     } catch (cause) {
-      // Effort validation failures are request errors, not provider run
+      // Effort/tools validation failures are request errors, not provider run
       // failures: surface them typed and never route them through fallback.
-      if (cause instanceof EffortError) {
+      if (cause instanceof EffortError || cause instanceof ToolsError) {
         throw cause;
       }
       const failure = toRunFailure(cause);
@@ -182,7 +186,11 @@ async function runOnce(ctx: SessionContext, options: HeadlessRunOptions): Promis
     return runPersistentOnce(ctx, options, timeoutMs);
   }
 
-  const { command, args } = await commandFor(options.agent, options.prompt, ctx.env, timeoutMs);
+  const spec = await commandFor(options.agent, options.prompt, ctx.env, timeoutMs);
+  if (spec.claudeStream) {
+    return runClaudeStream(ctx, options, spec, timeoutMs);
+  }
+  const { command, args } = spec;
   await emitProgress(options, { state: "starting", agent: options.agent, message: `Starting ${options.agent.provider}` });
   const result = await runCommand(command, args, {
     cwd: ctx.cwd,
@@ -200,6 +208,126 @@ async function runOnce(ctx: SessionContext, options: HeadlessRunOptions): Promis
   });
 
   return (result.stdout || result.stderr).trim();
+}
+
+/**
+ * Runs `claude --output-format stream-json`: text deltas of the top-level
+ * agent stream as `running` partialOutput, tool calls as `toolUse` events,
+ * and the `result` message becomes the final output.
+ */
+async function runClaudeStream(
+  ctx: SessionContext,
+  options: HeadlessRunOptions,
+  spec: CommandSpec,
+  timeoutMs: number
+): Promise<string> {
+  const agent = options.agent;
+  const tracker = new ClaudeToolUseTracker();
+  let buffer = "";
+  let text = "";
+  let result: Record<string, unknown> | undefined;
+  let assistantError: string | undefined;
+
+  const handleLine = async (line: string) => {
+    let message: Record<string, unknown>;
+    try {
+      message = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (message.type === "stream_event") {
+      const event = message.event as { type?: string; delta?: { type?: string; text?: string } } | undefined;
+      if (
+        message.parent_tool_use_id == null &&
+        event?.type === "content_block_delta" &&
+        event.delta?.type === "text_delta" &&
+        event.delta.text
+      ) {
+        text += event.delta.text;
+        await emitProgress(options, { state: "running", agent, partialOutput: event.delta.text });
+      }
+      return;
+    }
+    if (message.type === "result") {
+      result = message;
+      return;
+    }
+    if (message.type === "assistant" && message.parent_tool_use_id == null && typeof message.error === "string") {
+      assistantError = message.error;
+    }
+    for (const toolUse of tracker.events(message)) {
+      await emitProgress(options, { state: "running", agent, toolUse, message: describeToolUse(toolUse) });
+    }
+  };
+
+  // Lines are handled in order even though stdout chunks arrive faster than
+  // async progress callbacks settle.
+  let lines: Promise<void> = Promise.resolve();
+  const onStdout = (chunk: string) => {
+    buffer += chunk;
+    let newline = buffer.indexOf("\n");
+    while (newline !== -1) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line) {
+        lines = lines.then(() => handleLine(line)).catch(() => undefined);
+      }
+      newline = buffer.indexOf("\n");
+    }
+  };
+  const flush = async () => {
+    const rest = buffer.trim();
+    buffer = "";
+    if (rest) {
+      lines = lines.then(() => handleLine(rest)).catch(() => undefined);
+    }
+    await lines;
+  };
+  const resultError = (): string | undefined => {
+    if (!result || (result.subtype === "success" && result.is_error !== true)) {
+      return undefined;
+    }
+    const errors = Array.isArray(result.errors) ? result.errors.join("\n") : "";
+    const details = (typeof result.result === "string" && result.result) || errors || String(result.subtype);
+    return `${assistantError ? `${assistantError}: ` : ""}${details || "claude run failed"}`;
+  };
+
+  await emitProgress(options, { state: "starting", agent, message: `Starting ${agent.provider}` });
+  let stderr: string;
+  try {
+    ({ stderr } = await runCommand(spec.command, spec.args, {
+      cwd: ctx.cwd,
+      env: ctx.env,
+      signal: options.signal,
+      timeoutMs,
+      onStdout,
+      onStderr: () => undefined
+    }));
+  } catch (cause) {
+    await flush();
+    const failure = toRunFailure(cause);
+    if (failure.error.kind === "agent_stopped") {
+      // Timeout/abort keeps its own message and kind.
+      throw createRunFailure(failure.error.message, text, failure.stderr, failure.error.kind);
+    }
+    // Prefer the result's error over raw stream-json stdout.
+    const message =
+      resultError() || failure.stderr.trim() || (failure.stdout ? "claude exited with an error" : failure.error.message);
+    throw createRunFailure(message, text, failure.stderr, classifyError(message));
+  }
+  await flush();
+
+  const message = resultError();
+  if (message) {
+    throw createRunFailure(message, text, stderr, classifyError(message));
+  }
+  if (!result) {
+    const detail = stderr.trim() || "claude exited without a result";
+    throw createRunFailure(detail, text, stderr, classifyError(detail));
+  }
+  const output = (typeof result.result === "string" && result.result ? result.result : text).trim();
+  await emitProgress(options, { state: "completed", agent, partialOutput: output });
+  return output;
 }
 
 /** A one-shot run over a persistent transport: open a session, run, release. */
@@ -233,6 +361,7 @@ function validateRunOptions(options: HeadlessRunOptions): void {
   }
   const transport = resolveTransport(options.agent);
   validateTransport(options.agent.provider, transport);
+  resolveTools(options.agent);
   const effort = parseRequestedEffort(options.agent.reasoningEffort);
   if (
     transport === "cli" &&
@@ -244,6 +373,38 @@ function validateRunOptions(options: HeadlessRunOptions): void {
       'devin reasoningEffort requires an explicit agent.model (thinking levels are model variant suffixes, e.g. "claude-opus-5-high")'
     );
   }
+}
+
+/**
+ * Headless runs are text-in/text-out by default, so the agent must not use
+ * tools. Otherwise it may try to write a file and stop to ask for permission
+ * instead of printing the answer. Mirrors the codex read-only sandbox.
+ */
+function claudeNoToolArgs(): string[] {
+  return ["--output-format", "text", "--tools", ""];
+}
+
+/**
+ * Opt-in tools. stream-json streams text deltas and tool calls (text output
+ * prints nothing until the end). Anything not allowed is denied instead of
+ * prompting, because a headless run has no approval surface.
+ */
+function claudeToolArgs(tools: ResolvedTools): string[] {
+  return [
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--tools",
+    tools.allow.join(","),
+    "--permission-mode",
+    tools.permissionMode,
+    // Without this, --print waits forever on calls the mode would prompt for
+    // (e.g. a non-edit Bash command under acceptEdits).
+    "--permission-prompts",
+    "none",
+    ...(tools.allowedRules.length ? ["--allowedTools", ...tools.allowedRules] : [])
+  ];
 }
 
 /** Format milliseconds as an Agy --print-timeout duration (e.g. 2m, 5m0s, 90s). */
@@ -305,21 +466,19 @@ async function commandFor(
     if (effort && !CLAUDE_SUPPORTED_EFFORTS.includes(effort)) {
       throw unsupportedEffort("claude", modelId, effort, CLAUDE_SUPPORTED_EFFORTS);
     }
+    const tools = resolveTools(agent);
     return {
       command: env.CLAUDE_BIN || "claude",
       args: [
         "--print",
-        "--output-format",
-        "text",
-        // Headless runs are text-in/text-out, so the agent must not use tools.
-        // Otherwise it may try to write a file and stop to ask for permission
-        // instead of printing the answer. Mirrors the codex read-only sandbox.
-        "--tools",
-        "",
+        ...(tools ? claudeToolArgs(tools) : claudeNoToolArgs()),
         ...modelArgs,
         ...(effort ? ["--effort", effort] : []),
+        // `--tools`/`--allowedTools` are variadic and would swallow the prompt.
+        "--",
         prompt
-      ]
+      ],
+      claudeStream: tools !== undefined
     };
   }
 

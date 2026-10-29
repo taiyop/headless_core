@@ -61,7 +61,7 @@ p {
 
 .controls {
   display: grid;
-  grid-template-columns: 240px 120px 120px 1fr 140px;
+  grid-template-columns: 240px 120px 120px 1fr 140px 120px;
   gap: 12px;
 }
 
@@ -200,6 +200,26 @@ button:hover:not(:disabled) {
   color: var(--muted);
   font-size: 11px;
   text-align: right;
+}
+
+.tool-uses {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.tool-use {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-use.denied,
+.tool-use.failed {
+  color: var(--danger);
 }
 
 .composer {
