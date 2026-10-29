@@ -17,6 +17,7 @@
           <button id="new-chat" type="button">New chat</button>
           <button id="reload" type="button">Reload models</button>
           <button id="inspect" type="button">Run inspect</button>
+          <button id="refresh-usage" type="button">Refresh usage</button>
         </div>
       </section>
 
@@ -63,6 +64,13 @@
           <span id="inspect-code"></span>
         </div>
         <pre id="inspect-output"></pre>
+      </section>
+      <section class="usage-panel" aria-label="Usage limits">
+        <div class="inspect-title">
+          <span>Usage limits (remaining)</span>
+          <span id="usage-fetched"></span>
+        </div>
+        <div id="usage-list" class="usage-list"></div>
       </section>
       <section id="chat" class="chat" aria-live="polite"></section>
 

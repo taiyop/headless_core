@@ -14,6 +14,7 @@ It allows you to run local CLIs such as Claude Code, Codex, Grok, Agy, and Devin
 - Provider-specific model and reasoning effort option conversion
 - Failure classification and fallback hooks
 - Model candidate management via a shared `models.json` file
+- Remaining plan usage (5-hour / weekly / ...) per agent via `getUsageLimits` and `headless-core usage`
 - `headless-core models init|inspect` CLI
 
 ## Demo
@@ -149,6 +150,27 @@ const session = await headless.createSession({
   agent: { provider: "codex", transport: "app-server", model: "default" }
 });
 ```
+
+### `headless.getUsageLimits(options)` / `headless.getAllUsageLimits()`
+
+Reads the remaining plan usage (5-hour / daily / weekly / monthly windows) of each agent. Providers report usage as a percentage of the plan allowance, not as token counts.
+
+```ts
+const limits = await headless.getAllUsageLimits();
+// [{ provider: "claude", supported: true, available: true, plan: "pro",
+//    windows: [{ id: "five_hour", period: "five_hour", label: "5-hour",
+//                usedPercent: 12, remainingPercent: 88, resetsAt: "2026-10-29T12:20:00Z", windowMinutes: 300 }, ...] }, ...]
+
+const codex = await headless.getUsageLimits({ agent: "codex" });
+```
+
+| Agent | Source | Windows |
+| --- | --- | --- |
+| codex | `codex app-server` `account/rateLimits/read` | Whatever the plan defines (e.g. 5-hour + weekly, or monthly on free) |
+| claude | Claude Agent SDK `/usage` data (requires `@anthropic-ai/claude-agent-sdk` and a claude.ai login) | 5-hour, weekly, per-model weekly |
+| agy / grok / devin | — | `supported: false` (the CLIs expose no plan usage) |
+
+Provider-side failures never throw: they come back as `available: false` with `error`. No prompt is sent, so reading usage does not consume any. The claude source is an experimental SDK API and may change.
 
 ### `headless.shutdown()`
 
@@ -439,6 +461,7 @@ headless-core models inspect
 ```sh
 headless-core models init
 headless-core models inspect
+headless-core usage [agent...] [--json]   # remaining plan usage per agent
 ```
 
 To run the CLI from a source checkout, build first and invoke `dist/cli.js` (the `headless-core` bin points to it):

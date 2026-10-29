@@ -101,6 +101,50 @@ export type ToolsSpec = {
   allowedRules?: string[];
 };
 
+export type GetUsageLimitsOptions = {
+  agent: string;
+};
+
+/**
+ * Length of a plan usage window, derived from the provider-reported duration.
+ * `other` covers windows that match none of the named periods.
+ */
+export type UsagePeriod = "five_hour" | "daily" | "weekly" | "monthly" | "other";
+
+/**
+ * One rolling plan usage window. Providers report usage as a percentage of
+ * the plan allowance, not as token counts.
+ */
+export type UsageWindow = {
+  /** Provider-native window id, e.g. `five_hour`, `seven_day_opus`, `codex:primary`. */
+  id: string;
+  period: UsagePeriod;
+  label: string;
+  /** 0-100, or null when the provider did not report it. */
+  usedPercent: number | null;
+  /** `100 - usedPercent`, clamped to 0-100. */
+  remainingPercent: number | null;
+  /** ISO 8601 timestamp when the window resets. */
+  resetsAt: string | null;
+  windowMinutes: number | null;
+  /** Model or limit bucket the window applies to; absent for the account-wide allowance. */
+  scope?: string;
+};
+
+export type AgentUsageLimits = {
+  provider: AgentId;
+  /** False when the provider CLI exposes no plan usage at all. */
+  supported: boolean;
+  /** True when `windows` was fetched; false with `error` explaining why not. */
+  available: boolean;
+  /** Plan name as reported by the provider (e.g. `pro`, `max`, `plus`, `free`). */
+  plan: string | null;
+  windows: UsageWindow[];
+  error?: string;
+  /** ISO 8601 time of the fetch. */
+  fetchedAt: string;
+};
+
 export type HeadlessCoreConfig = {
   cwd?: string;
   timeoutMs?: number;
@@ -114,6 +158,18 @@ export type HeadlessCore = {
    * or a stateless CLI-backed session when `transport` is `cli`/omitted.
    */
   createSession(options: CreateSessionOptions): Promise<HeadlessSession>;
+  /**
+   * Reads the remaining plan usage (5-hour / daily / weekly / monthly windows)
+   * for one agent. Never throws for provider-side failures: they are reported
+   * through `available: false` and `error`. Unknown providers throw.
+   *
+   * Supported: codex (app-server `account/rateLimits/read`) and claude
+   * (Agent SDK, requires `@anthropic-ai/claude-agent-sdk` and a claude.ai
+   * login). agy, grok and devin report `supported: false`.
+   */
+  getUsageLimits(options: GetUsageLimitsOptions): Promise<AgentUsageLimits>;
+  /** getUsageLimits() for every agent in AGENT_IDS, fetched in parallel. */
+  getAllUsageLimits(): Promise<AgentUsageLimits[]>;
   /**
    * Closes all sessions and persistent agent processes owned by this core.
    * Subsequent calls to run()/createSession() still work; persistent

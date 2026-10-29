@@ -14,6 +14,7 @@ Claude Code、Codex、Grok、Agy、Devin などのローカル CLI を、同じ 
 - provider 別の model / reasoning effort option 変換
 - 失敗分類と fallback hook
 - 共有 `models.json` によるモデル候補管理
+- `getUsageLimits` / `headless-core usage` による agent ごとのプラン利用残量(5時間 / weekly など)
 - `headless-core models init|inspect` CLI
 
 ## Demo
@@ -149,6 +150,27 @@ const session = await headless.createSession({
   agent: { provider: "codex", transport: "app-server", model: "default" }
 });
 ```
+
+### `headless.getUsageLimits(options)` / `headless.getAllUsageLimits()`
+
+各 agent のプラン利用残量(5時間 / daily / weekly / monthly ウィンドウ)を取得します。プロバイダーはトークン数ではなくプラン上限に対する使用率(%)を返します。
+
+```ts
+const limits = await headless.getAllUsageLimits();
+// [{ provider: "claude", supported: true, available: true, plan: "pro",
+//    windows: [{ id: "five_hour", period: "five_hour", label: "5-hour",
+//                usedPercent: 12, remainingPercent: 88, resetsAt: "2026-10-29T12:20:00Z", windowMinutes: 300 }, ...] }, ...]
+
+const codex = await headless.getUsageLimits({ agent: "codex" });
+```
+
+| Agent | 取得元 | ウィンドウ |
+| --- | --- | --- |
+| codex | `codex app-server` の `account/rateLimits/read` | プランに応じて(例: 5時間 + weekly、free は monthly) |
+| claude | Claude Agent SDK の `/usage` データ(`@anthropic-ai/claude-agent-sdk` と claude.ai ログインが必要) | 5時間、weekly、モデル別 weekly |
+| agy / grok / devin | — | `supported: false`(CLI がプラン利用量を公開していない) |
+
+プロバイダー側の失敗は throw せず `available: false` と `error` で返します。プロンプトは送らないので、取得自体で利用量は消費しません。claude の取得元は SDK の experimental API のため将来変わる可能性があります。
 
 ### `headless.shutdown()`
 
@@ -439,6 +461,7 @@ headless-core models inspect
 ```sh
 headless-core models init
 headless-core models inspect
+headless-core usage [agent...] [--json]   # agent ごとのプラン利用残量
 ```
 
 ソースチェックアウトから実行する場合は、先にビルドして `dist/cli.js` を直接呼びます(`headless-core` bin はここを指します):

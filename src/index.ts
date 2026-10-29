@@ -21,6 +21,7 @@ export {
   type AgentId,
   type AgentSpec,
   type AgentTransport,
+  type AgentUsageLimits,
   type CreateSessionOptions,
   type Effort,
   type EffortLevel,
@@ -29,6 +30,7 @@ export {
   type FallbackResult,
   type GetAvailableReasoningEffortOptionsOptions,
   type GetAvailableModelsOptions,
+  type GetUsageLimitsOptions,
   type HeadlessCore,
   type HeadlessCoreConfig,
   type HeadlessError,
@@ -44,5 +46,7 @@ export {
   type ToolPermissionMode,
   type ToolsSpec,
   type ToolUseEvent,
-  type ToolUseStatus
+  type ToolUseStatus,
+  type UsagePeriod,
+  type UsageWindow
 } from "./types.js";

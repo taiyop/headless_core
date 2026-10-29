@@ -2,11 +2,16 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveModelsConfigPath } from "./config.js";
+import { createHeadlessCore } from "./headlessCore.js";
 import { inspectAllAgentModels } from "./inspectors.js";
-import { AGENT_IDS, CLAUDE_MODEL_IDS, type ModelsConfig } from "./types.js";
+import { AGENT_IDS, CLAUDE_MODEL_IDS, type AgentUsageLimits, type ModelsConfig } from "./types.js";
 
 async function main(argv: string[]): Promise<number> {
   const [group, command] = argv;
+  if (group === "usage") {
+    return showUsage(argv.slice(1));
+  }
+
   if (group !== "models") {
     printUsage();
     return 1;
@@ -61,6 +66,40 @@ async function inspectModels(): Promise<number> {
   return 0;
 }
 
+async function showUsage(args: string[]): Promise<number> {
+  const json = args.includes("--json");
+  const agents = args.filter((arg) => arg !== "--json");
+  const headless = createHeadlessCore();
+  try {
+    const results = agents.length
+      ? await Promise.all(agents.map((agent) => headless.getUsageLimits({ agent })))
+      : await headless.getAllUsageLimits();
+    process.stdout.write(json ? `${JSON.stringify(results, null, 2)}\n` : formatUsage(results));
+    return 0;
+  } finally {
+    await headless.shutdown();
+  }
+}
+
+function formatUsage(results: AgentUsageLimits[]): string {
+  const lines: string[] = [];
+  for (const result of results) {
+    lines.push(`${result.provider}${result.plan ? ` (${result.plan})` : ""}`);
+    if (!result.available) {
+      lines.push(`  ${result.supported ? "unavailable" : "not supported"}: ${result.error ?? "unknown"}`);
+    } else if (result.windows.length === 0) {
+      lines.push("  no usage windows reported");
+    }
+    for (const window of result.windows) {
+      const remaining = window.remainingPercent === null ? "?" : `${window.remainingPercent}%`;
+      const used = window.usedPercent === null ? "?" : `${window.usedPercent}%`;
+      const resets = window.resetsAt ? `  resets ${new Date(window.resetsAt).toLocaleString()}` : "";
+      lines.push(`  ${window.label.padEnd(22)} remaining ${remaining.padStart(4)}  (used ${used})${resets}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function formatConfig(config: ModelsConfig): string {
   const ordered: ModelsConfig = { models: {} };
   for (const agent of AGENT_IDS) {
@@ -70,7 +109,7 @@ function formatConfig(config: ModelsConfig): string {
 }
 
 function printUsage(): void {
-  process.stderr.write("Usage: headless-core models <init|inspect>\n");
+  process.stderr.write("Usage: headless-core models <init|inspect>\n       headless-core usage [agent...] [--json]\n");
 }
 
 function isFileExistsError(cause: unknown): boolean {

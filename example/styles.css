@@ -163,6 +163,71 @@ button:hover:not(:disabled) {
   line-height: 1.45;
 }
 
+.usage-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.usage-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  padding: 12px;
+  font-size: 13px;
+}
+
+.usage-agent {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.usage-agent-name {
+  font-weight: 600;
+}
+
+.usage-plan,
+.usage-note,
+.usage-reset {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.usage-note.error {
+  color: var(--danger);
+}
+
+.usage-window {
+  display: grid;
+  gap: 4px;
+}
+
+.usage-window-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.usage-bar-fill.low {
+  background: var(--danger);
+}
+
 .chat {
   min-height: 360px;
   max-height: 62vh;

@@ -4,6 +4,7 @@ import type {
   ModelInfo,
   Options as ClaudeSdkOptions,
   Query,
+  SDKControlGetUsageResponse,
   SDKMessage,
   SDKUserMessage
 } from "@anthropic-ai/claude-agent-sdk";
@@ -191,6 +192,20 @@ export class ClaudeSdkRuntime implements PersistentRuntime {
     return this.query.supportedModels();
   }
 
+  /**
+   * Plan usage behind `/usage` (5-hour / 7-day windows). The SDK marks this
+   * API experimental, so a missing method is reported as a protocol error.
+   */
+  usage(): Promise<SDKControlGetUsageResponse> {
+    const query = this.query as Partial<Pick<Query, "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET">>;
+    if (typeof query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET !== "function") {
+      return Promise.reject(
+        new HeadlessSessionError("PROTOCOL_ERROR", `The installed ${SDK_PACKAGE} does not expose plan usage`)
+      );
+    }
+    return query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET.call(this.query, { skipBehaviors: true });
+  }
+
   close(): Promise<void> {
     if (this.isAlive) {
       this.input.end();
@@ -241,6 +256,19 @@ export class ClaudeSdkRuntime implements PersistentRuntime {
         // ignore
       }
     }
+  }
+}
+
+/**
+ * Reads claude.ai plan usage through a short-lived, tool-less Agent SDK query.
+ * No prompt is sent, so this does not consume any usage itself.
+ */
+export async function fetchClaudeUsage(ctx: SessionContext): Promise<SDKControlGetUsageResponse> {
+  const runtime = await ClaudeSdkRuntime.start(ctx, { tools: [], permissionMode: "dontAsk", persistSession: false });
+  try {
+    return await runtime.usage();
+  } finally {
+    await runtime.close();
   }
 }
 

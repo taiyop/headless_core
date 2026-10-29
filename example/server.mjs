@@ -87,6 +87,10 @@ const server = createServer(async (req, res) => {
       return json(res, 200, result);
     }
 
+    if (req.method === "GET" && url.pathname === "/api/usage") {
+      return json(res, 200, { agents: await headless.getAllUsageLimits() });
+    }
+
     if (req.method === "POST" && url.pathname === "/api/session/reset") {
       const body = await readJson(req);
       return json(res, 200, await resetSession(body));

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `headless.getUsageLimits({ agent })` / `headless.getAllUsageLimits()` (`AgentUsageLimits`, `UsageWindow`, `UsagePeriod`): remaining plan usage per agent as 5-hour / daily / weekly / monthly windows. codex reads `account/rateLimits/read` from `codex app-server`; claude reads the Agent SDK `/usage` data (experimental SDK API). agy, grok and devin report `supported: false`.
+- `headless-core usage [agent...] [--json]` CLI command.
+
 ## 0.5.0
 
 ### Added

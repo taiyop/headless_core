@@ -112,6 +112,17 @@ readline
           nextCursor: null
         });
         return;
+      case "account/rateLimits/read": {
+        const snapshot = {
+          limitId: "codex",
+          limitName: null,
+          primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1800000000 },
+          secondary: { usedPercent: 60, windowDurationMins: 10080, resetsAt: 1800500000 },
+          planType: "plus"
+        };
+        respond(id, { rateLimits: snapshot, rateLimitsByLimitId: { codex: snapshot } });
+        return;
+      }
       case "turn/start": {
         const turnId = `turn-${++turnSeq}`;
         const threadId = params.threadId;

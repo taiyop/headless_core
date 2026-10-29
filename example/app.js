@@ -15,6 +15,9 @@ const reloadButton = document.querySelector("#reload");
 const inspectButton = document.querySelector("#inspect");
 const inspectCodeEl = document.querySelector("#inspect-code");
 const inspectOutputEl = document.querySelector("#inspect-output");
+const refreshUsageButton = document.querySelector("#refresh-usage");
+const usageListEl = document.querySelector("#usage-list");
+const usageFetchedEl = document.querySelector("#usage-fetched");
 
 let modelsByAgent = {};
 let elapsedTimerId = null;
@@ -37,6 +40,7 @@ if (savedModelsSource === "local" || savedModelsSource === "shared") {
 newChatButton.addEventListener("click", startNewChat);
 reloadButton.addEventListener("click", loadModels);
 inspectButton.addEventListener("click", runInspect);
+refreshUsageButton.addEventListener("click", loadUsage);
 modelsSourceSelect.addEventListener("change", () => {
   localStorage.setItem("modelsSource", modelsSourceSelect.value);
   loadModels();
@@ -52,6 +56,8 @@ form.addEventListener("submit", async (event) => {
   await sendMessage();
 });
 
+// Reading usage spawns provider processes, so it runs alongside the model load.
+void loadUsage();
 await loadModels();
 
 async function loadModels() {
@@ -185,6 +191,92 @@ async function runInspect() {
   } finally {
     inspectButton.disabled = false;
   }
+}
+
+async function loadUsage() {
+  refreshUsageButton.disabled = true;
+  usageFetchedEl.textContent = "loading...";
+
+  try {
+    const response = await fetch("/api/usage");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? "Usage fetch failed");
+    renderUsage(data.agents);
+    usageFetchedEl.textContent = `fetched ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    usageFetchedEl.textContent = "";
+    const note = document.createElement("div");
+    note.className = "usage-note error";
+    note.textContent = error.message;
+    usageListEl.replaceChildren(note);
+  } finally {
+    refreshUsageButton.disabled = false;
+  }
+}
+
+function renderUsage(agents) {
+  usageListEl.replaceChildren(
+    ...agents.map((limits) => {
+      const card = document.createElement("div");
+      card.className = "usage-agent";
+
+      const name = document.createElement("div");
+      name.className = "usage-agent-name";
+      name.textContent = limits.provider;
+      if (limits.plan) {
+        const plan = document.createElement("span");
+        plan.className = "usage-plan";
+        plan.textContent = ` ${limits.plan}`;
+        name.append(plan);
+      }
+      card.append(name);
+
+      if (!limits.available || limits.windows.length === 0) {
+        const note = document.createElement("div");
+        note.className = `usage-note${limits.supported ? " error" : ""}`;
+        note.textContent = !limits.supported
+          ? "not supported"
+          : limits.error ?? "no usage windows reported";
+        card.append(note);
+        return card;
+      }
+
+      for (const window of limits.windows) {
+        card.append(renderUsageWindow(window));
+      }
+      return card;
+    })
+  );
+}
+
+function renderUsageWindow(window) {
+  const row = document.createElement("div");
+  row.className = "usage-window";
+
+  const head = document.createElement("div");
+  head.className = "usage-window-head";
+  const label = document.createElement("span");
+  label.textContent = window.label;
+  const value = document.createElement("span");
+  value.textContent = window.remainingPercent === null ? "?" : `${window.remainingPercent}% left`;
+  head.append(label, value);
+
+  const bar = document.createElement("div");
+  bar.className = "usage-bar";
+  const fill = document.createElement("div");
+  const remaining = window.remainingPercent ?? 0;
+  fill.className = `usage-bar-fill${remaining <= 20 ? " low" : ""}`;
+  fill.style.width = `${remaining}%`;
+  bar.append(fill);
+
+  row.append(head, bar);
+  if (window.resetsAt) {
+    const reset = document.createElement("div");
+    reset.className = "usage-reset";
+    reset.textContent = `resets ${new Date(window.resetsAt).toLocaleString()}`;
+    row.append(reset);
+  }
+  return row;
 }
 
 function renderAgentOptions() {

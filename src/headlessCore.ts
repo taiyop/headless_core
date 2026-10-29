@@ -15,6 +15,7 @@ import { devinModelWithEffort, resolveDevinModel } from "./devinModel.js";
 import { GrokAcpRuntime, GrokAcpSession, grokAcpRuntimeKey } from "./grokAcp.js";
 import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
 import { EffortError, ToolsError } from "./errors.js";
+import { getAllUsageLimits, getUsageLimits } from "./usageLimits.js";
 import { agyModelIds, codexModelEffortLevels, devinModelVariantUids } from "./modelCatalog.js";
 import {
   RuntimeManager,
@@ -72,6 +73,12 @@ export function createHeadlessCore(config: HeadlessCoreConfig = {}): HeadlessCor
     },
     async createSession(options) {
       return createSession(contextFor(options.cwd), options);
+    },
+    async getUsageLimits(options) {
+      return getUsageLimits(contextFor(), options.agent);
+    },
+    async getAllUsageLimits() {
+      return getAllUsageLimits(contextFor());
     },
     async shutdown() {
       await manager.shutdown();

@@ -32,6 +32,8 @@ GUIの `Models source` で `./example/models.json` (Local) と `~/.config/headle
 
 UI上でも `Run inspect` を押すと、同じ `headless-core models inspect` 相当の stdout / stderr を確認できます。これは検証用で、`example/models.json` は更新しません。
 
+`Usage limits` パネルには各 Agent のプラン利用残量(5時間 / weekly / monthly など)が表示されます。起動時に自動で取得し、`Refresh usage` で再取得します(`headless.getAllUsageLimits()` を `GET /api/usage` 経由で呼んでいます)。codex と claude のみ対応で、agy / grok / devin は `not supported` と表示されます。
+
 手元でまずUIだけ確認したい場合は、サンプルをコピーして使えます。
 
 ```sh
