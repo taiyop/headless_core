@@ -1454,3 +1454,47 @@ describe("transport validation and cli sessions", () => {
     await expectErrorCode(session.run({ prompt: "x" }), "SESSION_CLOSED");
   });
 });
+
+describe("acp progress events", () => {
+  const providers = [
+    { provider: "devin", fixture: "fake-devin-acp.mjs", envKey: "DEVIN_BIN" },
+    { provider: "agy", fixture: "fake-agy-acp-server.mjs", envKey: "AGY_ACP_BIN" },
+    { provider: "grok", fixture: "fake-grok-acp.mjs", envKey: "GROK_BIN" }
+  ] as const;
+
+  for (const { provider, fixture, envKey } of providers) {
+    it(`${provider}: reports thoughts, plans and tool calls without changing the output`, async () => {
+      const bin = await installFixture(fixture);
+      const headless = createHeadlessCore({ env: { ...process.env, [envKey]: bin, FAKE_LOG: logPath } });
+      const session = await headless.createSession({ agent: { provider, transport: "acp" } });
+      const events: ProgressEvent[] = [];
+      const output = await session.run({ prompt: "TOOLS", onProgress: (event) => void events.push(event) });
+      // The stray update the fake sends after the turn must not be reported.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(output).toBe("answer");
+      expect(deltasOf(events)).toBe("answer");
+      const running = events.filter((event) => event.state === "running");
+      expect(running.map((event) => event.thought).filter(Boolean)).toEqual(["thinking"]);
+      expect(running.find((event) => event.plan)?.plan).toEqual([
+        { content: "Read", priority: "high", status: "in_progress" }
+      ]);
+      expect(running.flatMap((event) => (event.toolUse ? [event.toolUse.status] : []))).toEqual([
+        "started",
+        "started",
+        "completed"
+      ]);
+      expect(running.at(-2)?.toolUse).toEqual({
+        id: "tc-9",
+        name: "README.md",
+        status: "completed",
+        kind: "read",
+        title: "README.md",
+        locations: [{ path: "README.md", line: 1 }],
+        output: "# Title"
+      });
+      expect(events.at(-1)?.state).toBe("completed");
+      await headless.shutdown();
+    });
+  }
+});

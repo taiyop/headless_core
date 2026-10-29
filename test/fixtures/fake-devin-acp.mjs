@@ -9,6 +9,8 @@
 //                  after the client answers
 //   "KILL"       - exits the process (crash test)
 //   "FAILPROMPT" - stopReason "refusal"
+//   "TOOLS"      - thought, plan and an out-of-order tool call, then "answer";
+//                  a stray update after the turn must be dropped
 //   otherwise    - two agent_message_chunk updates + stopReason "end_turn",
 //                  text is "echo:<prompt>"
 import { appendFileSync } from "node:fs";
@@ -172,6 +174,23 @@ readline
             finishPrompt(sessionId, text);
           });
           pendingPrompts.set(sessionId, { id });
+          return;
+        }
+        if (text === "TOOLS") {
+          // A thought, a plan and a tool call whose update arrives before the
+          // tool_call itself, then a stray update after the turn ended.
+          const update = (u) => notify("session/update", { sessionId, update: u });
+          pendingPrompts.set(sessionId, { id });
+          setTimeout(() => {
+            update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
+            update({ sessionUpdate: "plan", entries: [{ content: "Read", priority: "high", status: "in_progress" }] });
+            update({ sessionUpdate: "tool_call_update", toolCallId: "tc-9", status: "in_progress" });
+            update({ sessionUpdate: "tool_call", toolCallId: "tc-9", title: "README.md", kind: "read", rawInput: { path: "README.md" }, locations: [{ path: "README.md", line: 1 }] });
+            update({ sessionUpdate: "tool_call_update", toolCallId: "tc-9", status: "completed", content: [{ type: "content", content: { type: "text", text: "# Title" } }] });
+            chunk(sessionId, "answer");
+            finishPrompt(sessionId, text);
+            setTimeout(() => update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "late" } }), 5);
+          }, 5);
           return;
         }
         if (text === "FAILPROMPT") {
