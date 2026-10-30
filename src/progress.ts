@@ -242,3 +242,32 @@ export function debugEvent(env: NodeJS.ProcessEnv, source: string, event: unknow
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+/**
+ * grok streaming-messages-json tool_result content is a JSON string of the
+ * tool's own result: `{ type: "Bash", output: [<utf-8 bytes>] }`,
+ * `{ type: "ReadFile", FileContent: { content } }`, ... Decode the readable
+ * part, falling back to the raw content.
+ */
+export function grokToolResultText(content: unknown): string {
+  if (typeof content !== "string") {
+    return outputText(content) ?? "";
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return content;
+  }
+  if (!isRecord(parsed)) {
+    return content;
+  }
+  if (Array.isArray(parsed.output) && parsed.output.every((byte) => typeof byte === "number")) {
+    return Buffer.from(parsed.output as number[]).toString("utf8");
+  }
+  const file = isRecord(parsed.FileContent) ? parsed.FileContent.content : undefined;
+  if (typeof file === "string") {
+    return file;
+  }
+  return typeof parsed.output === "string" ? parsed.output : content;
+}

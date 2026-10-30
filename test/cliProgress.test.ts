@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AgyStreamConverter } from "../src/agyProgress.js";
 import { ClaudeStreamConverter } from "../src/claudeTools.js";
 import { CodexAppServerProgress, CodexExecConverter } from "../src/codexProgress.js";
 import {
@@ -9,6 +10,7 @@ import {
   claudeToolKind,
   codexToolKind,
   grokToolKind,
+  grokToolResultText,
   todosToPlan,
   toolTitle,
   truncateOutput,
@@ -186,6 +188,52 @@ describe("codex fixtures", () => {
       ["execute", "rm x", "denied"],
       ["search", "acp", "completed"]
     ]);
+  });
+});
+
+describe("agy cli fixture", () => {
+  it("stream-json: text deltas, run_command and read_file steps, no thoughts", () => {
+    const converter = new AgyStreamConverter();
+    const { events, output } = convertFixture("agy-cli/stream.jsonl", converter);
+    expect(converter.error()).toBeUndefined();
+    expectConformance(events, output ?? "", { exact: true });
+    expect(output).toContain("# Sample Project");
+    const calls = mergedToolCalls(events);
+    expect(calls.map((call) => [call.name, call.kind, call.title, call.status])).toEqual([
+      ["run_command", "execute", "ls -la", "completed"],
+      ["read_file", "read", "/workspace/README.md", "completed"]
+    ]);
+    expect(calls[0]?.output).toContain("notes.txt");
+    expect(calls[1]?.locations).toEqual([{ path: "/workspace/README.md" }]);
+    expect(events.some((event) => event.thought)).toBe(false);
+  });
+
+  it("reports a non-SUCCESS result as the run error", () => {
+    const converter = new AgyStreamConverter();
+    converter.convert({ event: "result", result: { status: "ERROR", error: "quota exceeded" } });
+    expect(converter.error()).toBe("quota exceeded");
+    expect(new AgyStreamConverter().output()).toBeUndefined();
+  });
+});
+
+describe("grok cli fixture", () => {
+  const grokConverter = () => new ClaudeStreamConverter("grok", { kindOf: grokToolKind, resultText: grokToolResultText });
+
+  it("streaming-messages-json: text and thinking deltas, decoded tool results", () => {
+    const converter = grokConverter();
+    const { events, output } = convertFixture("grok-cli/stream.jsonl", converter);
+    expect(converter.error()).toBeUndefined();
+    expect(output).toContain("# Sample Project");
+    expectConformance(events, output ?? "");
+    expect(events.filter((event) => event.thought).length).toBeGreaterThan(0);
+    const calls = mergedToolCalls(events);
+    expect(calls.map((call) => [call.name, call.kind, call.title, call.status])).toEqual([
+      ["run_terminal_command", "execute", "ls -la", "completed"],
+      ["read_file", "read", "README.md", "completed"]
+    ]);
+    // The byte-array Bash output is decoded to text.
+    expect(calls[0]?.output).toContain("notes.txt");
+    expect(calls[1]?.output).toContain("# Sample Project");
   });
 });
 

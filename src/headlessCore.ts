@@ -15,7 +15,8 @@ import { DevinAcpRuntime, DevinAcpSession, devinAcpRuntimeKey } from "./devinAcp
 import { devinModelWithEffort, resolveDevinModel } from "./devinModel.js";
 import { GrokAcpRuntime, GrokAcpSession, grokAcpRuntimeKey } from "./grokAcp.js";
 import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
-import { debugEvent, type ProgressUpdate } from "./progress.js";
+import { AgyStreamConverter } from "./agyProgress.js";
+import { debugEvent, grokToolKind, grokToolResultText, type ProgressUpdate } from "./progress.js";
 import { EffortError, ToolsError } from "./errors.js";
 import { getAllUsageLimits, getUsageLimits } from "./usageLimits.js";
 import { agyModelIds, codexModelEffortLevels, devinModelVariantUids } from "./modelCatalog.js";
@@ -507,9 +508,14 @@ async function commandFor(
         "--print-timeout",
         formatAgyPrintTimeout(timeoutMs),
         ...(resolved.flagEffort ? ["--effort", resolved.flagEffort] : []),
+        // Must precede --print: --print takes the prompt as its value and
+        // agy rejects a run whose prompt slot holds another flag.
+        "--output-format",
+        "stream-json",
         "--print",
         prompt
-      ]
+      ],
+      stream: () => new AgyStreamConverter()
     };
   }
 
@@ -560,11 +566,16 @@ async function commandFor(
     args: [
       ...modelArgs,
       ...(effort ? ["--effort", effort] : []),
+      // streaming-messages-json is Claude Code stream-json: with
+      // --include-partial-messages it carries text *and* thinking deltas,
+      // which streaming-json (ACP-shaped, no thinking) does not.
       "--output-format",
-      "plain",
+      "streaming-messages-json",
+      "--include-partial-messages",
       "--single",
       prompt
-    ]
+    ],
+    stream: () => new ClaudeStreamConverter("grok", { kindOf: grokToolKind, resultText: grokToolResultText })
   };
 }
 

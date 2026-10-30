@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHeadlessCore, ToolsError, type HeadlessCore, type ProgressEvent } from "../src/index.js";
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -68,6 +68,31 @@ describe("claude cli tools", () => {
       ["TodoWrite", "think", "started"],
       ["TodoWrite", "think", "completed"]
     ]);
+  });
+
+  it("writes raw events to stderr only with HEADLESS_CORE_DEBUG_EVENTS=1", async () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      await headless.run({ agent: { provider: "claude" }, prompt: "quiet" });
+      expect(writes.filter((line) => line.includes("headlessCoreEvent"))).toEqual([]);
+
+      const debug = createHeadlessCore({
+        cwd: tmpDir,
+        env: { ...process.env, CLAUDE_BIN: path.join(tmpDir, "claude"), HEADLESS_CORE_DEBUG_EVENTS: "1" }
+      });
+      await debug.run({ agent: { provider: "claude" }, prompt: "loud" });
+      const lines = writes.filter((line) => line.includes("headlessCoreEvent")).map((line) => JSON.parse(line));
+      expect(lines.length).toBeGreaterThan(2);
+      expect(lines.every((line) => line.headlessCoreEvent === "claude:cli")).toBe(true);
+      expect(lines.at(-1).event).toMatchObject({ type: "result", result: "PROMPT:loud" });
+      expect(writes.every((line) => line.endsWith("\n") && !line.slice(0, -1).includes("\n"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("keeps the text-only arguments when tools.allow is empty", async () => {
