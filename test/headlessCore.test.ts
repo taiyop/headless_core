@@ -116,7 +116,7 @@ describe("createHeadlessCore", () => {
       "fake-claude.mjs",
       [
         "#!/usr/bin/env node",
-        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+        "const out = JSON.stringify(process.argv.slice(2)); process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: out }));"
       ].join("\n")
     );
     const headless = createHeadlessCore({ env: { ...process.env, CLAUDE_BIN: bin } });
@@ -129,7 +129,9 @@ describe("createHeadlessCore", () => {
     expect(JSON.parse(output)).toEqual([
       "--print",
       "--output-format",
-      "text",
+      "stream-json",
+      "--verbose",
+      "--include-partial-messages",
       "--tools",
       "",
       "--model",

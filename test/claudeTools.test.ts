@@ -38,6 +38,38 @@ describe("claude cli tools", () => {
     );
   });
 
+  it("streams text and thinking without tools and keeps the text-mode output", async () => {
+    const events: ProgressEvent[] = [];
+    const output = await headless.run({
+      agent: { provider: "claude" },
+      prompt: "hello",
+      onProgress: (event) => void events.push(event)
+    });
+    // The same answer `--output-format text` printed before the switch.
+    expect(output).toBe("PROMPT:hello");
+    const running = events.filter((event) => event.state === "running");
+    expect(running.map((event) => event.partialOutput ?? `[${event.thought}]`)).toEqual(["[ponder]", "PRO", "MPT:hello"]);
+    expect(events.at(-1)).toMatchObject({ state: "completed", partialOutput: "PROMPT:hello" });
+  });
+
+  it("reports whole thinking blocks once and TodoWrite as a plan", async () => {
+    const events: ProgressEvent[] = [];
+    await headless.run({
+      agent: { provider: "claude", tools: { allow: ["TodoWrite"] } },
+      prompt: "todo",
+      onProgress: (event) => void events.push(event)
+    });
+    expect(events.flatMap((event) => (event.thought ? [event.thought] : []))).toEqual(["plan first"]);
+    expect(events.find((event) => event.plan)?.plan).toEqual([
+      { content: "Clone", status: "completed" },
+      { content: "Read", status: "in_progress" }
+    ]);
+    expect(events.flatMap((event) => (event.toolUse ? [[event.toolUse.name, event.toolUse.kind, event.toolUse.status]] : []))).toEqual([
+      ["TodoWrite", "think", "started"],
+      ["TodoWrite", "think", "completed"]
+    ]);
+  });
+
   it("keeps the text-only arguments when tools.allow is empty", async () => {
     await expect(
       headless.run({ agent: { provider: "claude", tools: { allow: [] } }, prompt: "hello" })
@@ -76,15 +108,31 @@ describe("claude cli tools", () => {
       "lo"
     ]);
     expect(events.flatMap((event) => (event.toolUse ? [event.toolUse] : []))).toEqual([
-      { id: "t1", name: "Bash", status: "started", input: { command: "git clone https://example.com/repo" } },
-      { id: "t2", name: "Bash", status: "started", input: { command: "ls /" } },
-      { id: "t2", name: "Bash", status: "denied", output: "Permission denied" },
-      { id: "t1", name: "Bash", status: "completed", output: "Cloning into 'repo'..." }
+      {
+        id: "t1",
+        name: "Bash",
+        kind: "execute",
+        title: "git clone https://example.com/repo",
+        status: "started",
+        input: { command: "git clone https://example.com/repo" }
+      },
+      { id: "t2", name: "Bash", kind: "execute", title: "ls /", status: "started", input: { command: "ls /" } },
+      { id: "t2", name: "Bash", kind: "execute", title: "ls /", status: "denied", output: "Permission denied" },
+      {
+        id: "t1",
+        name: "Bash",
+        kind: "execute",
+        title: "git clone https://example.com/repo",
+        status: "completed",
+        output: "Cloning into 'repo'..."
+      }
     ]);
     expect(events.find((event) => event.toolUse?.status === "denied")).toMatchObject({
       state: "running",
-      message: "Bash denied"
+      message: "ls / denied"
     });
+    // Sub-agent text and thinking stay out of the top-level stream.
+    expect(events.some((event) => event.thought)).toBe(false);
     expect(events.at(-1)).toMatchObject({ state: "completed", partialOutput: output });
   });
 

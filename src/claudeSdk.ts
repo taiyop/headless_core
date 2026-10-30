@@ -8,7 +8,8 @@ import type {
   SDKMessage,
   SDKUserMessage
 } from "@anthropic-ai/claude-agent-sdk";
-import { ClaudeToolUseTracker, describeToolUse, resolveTools, type ResolvedTools } from "./claudeTools.js";
+import { ClaudeStreamConverter, resolveTools, type ResolvedTools } from "./claudeTools.js";
+import { debugEvent } from "./progress.js";
 import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
 import { HeadlessSessionError } from "./errors.js";
 import type { PersistentRuntime, SessionContext } from "./runtimeManager.js";
@@ -299,7 +300,7 @@ export class ClaudeSdkSession implements HeadlessSession {
   private activeTurnOptions: HeadlessSessionRunOptions | undefined;
   private accumulated = "";
   private assistantError: string | undefined;
-  private toolUses = new ClaudeToolUseTracker();
+  private progress = new ClaudeStreamConverter();
   // Results still owed by the runtime for turns already sent. A result only
   // settles the active turn when it is the last one outstanding, so a late
   // result from an interrupted turn is never mistaken for the next answer.
@@ -460,7 +461,7 @@ export class ClaudeSdkSession implements HeadlessSession {
 
     this.accumulated = "";
     this.assistantError = undefined;
-    this.toolUses = new ClaudeToolUseTracker();
+    this.progress = new ClaudeStreamConverter();
     this.activeTurnOptions = options;
     const settlement = startTurn({
       timeoutMs: options.timeoutMs ?? this.ctx.timeoutMs,
@@ -492,32 +493,18 @@ export class ClaudeSdkSession implements HeadlessSession {
   }
 
   private handleMessage(message: SDKMessage): void {
+    debugEvent(this.ctx.env, "claude:sdk", message);
     const current = this.pendingResults <= 1;
-    if (message.type === "stream_event") {
-      if (!current || message.parent_tool_use_id !== null || !this.activeTurn || !this.activeTurnOptions) {
-        return;
-      }
-      const event = message.event;
-      if (event.type === "content_block_delta" && event.delta.type === "text_delta" && event.delta.text) {
-        this.accumulated += event.delta.text;
-        emitSessionProgress(this.activeTurnOptions, this.agent, {
-          state: "running",
-          partialOutput: event.delta.text
-        });
-      }
-      return;
-    }
     if (message.type === "assistant" && current && message.parent_tool_use_id === null && message.error) {
       this.assistantError = message.error;
     }
     if (message.type !== "result") {
       if (current && this.activeTurn && this.activeTurnOptions) {
-        for (const toolUse of this.toolUses.events(message)) {
-          emitSessionProgress(this.activeTurnOptions, this.agent, {
-            state: "running",
-            toolUse,
-            message: describeToolUse(toolUse)
-          });
+        for (const update of this.progress.convert(message)) {
+          if (update.partialOutput) {
+            this.accumulated += update.partialOutput;
+          }
+          emitSessionProgress(this.activeTurnOptions, this.agent, { state: "running", ...update });
         }
       }
       return;
