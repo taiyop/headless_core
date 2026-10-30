@@ -10,6 +10,7 @@ import {
   CodexAppServerSession,
   codexAppServerRuntimeKey
 } from "./codexAppServer.js";
+import { CodexExecConverter } from "./codexProgress.js";
 import { DevinAcpRuntime, DevinAcpSession, devinAcpRuntimeKey } from "./devinAcp.js";
 import { devinModelWithEffort, resolveDevinModel } from "./devinModel.js";
 import { GrokAcpRuntime, GrokAcpSession, grokAcpRuntimeKey } from "./grokAcp.js";
@@ -451,6 +452,9 @@ async function commandFor(
       command: env.CODEX_BIN || "codex",
       args: [
         "exec",
+        // JSONL events: reasoning, commands, file changes and searches arrive
+        // as items; the last agent_message is the answer plain stdout printed.
+        "--json",
         ...modelArgs,
         "--config",
         'approval_policy="never"',
@@ -461,7 +465,8 @@ async function commandFor(
         "--color",
         "never",
         prompt
-      ]
+      ],
+      stream: () => new CodexExecConverter()
     };
   }
 

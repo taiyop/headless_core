@@ -1438,7 +1438,16 @@ describe("transport validation and cli sessions", () => {
 
   it("createSession without transport stays a stateless CLI session", async () => {
     const bin = path.join(tmpDir, "fake-codex-cli.mjs");
-    await writeFile(bin, '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)));\n');
+    // Answers like `codex exec --json`: the argv as the final agent_message.
+    await writeFile(
+      bin,
+      [
+        "#!/usr/bin/env node",
+        "const text = JSON.stringify(process.argv.slice(2));",
+        'process.stdout.write(JSON.stringify({ type: "item.completed", item: { id: "m", type: "agent_message", text } }) + "\\n");',
+        'process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");'
+      ].join("\n")
+    );
     await chmod(bin, 0o755);
     const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
 
@@ -1497,4 +1506,33 @@ describe("acp progress events", () => {
       await headless.shutdown();
     });
   }
+});
+
+describe("codex app-server progress events", () => {
+  it("reports reasoning, plans and command items of the active turn only", async () => {
+    const bin = await installFixture("fake-codex-app-server.mjs");
+    const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin, FAKE_LOG: logPath } });
+    const session = await headless.createSession({ agent: { provider: "codex", transport: "app-server" } });
+    const events: ProgressEvent[] = [];
+    const output = await session.run({ prompt: "TOOLS", onProgress: (event) => void events.push(event) });
+
+    expect(output).toBe("echo:TOOLS");
+    expect(deltasOf(events)).toBe("echo:TOOLS");
+    const running = events.filter((event) => event.state === "running");
+    expect(running.map((event) => event.thought).filter(Boolean)).toEqual(["thinking"]);
+    expect(running.find((event) => event.plan)?.plan).toEqual([{ content: "Check", status: "in_progress" }]);
+    // The item for another turn id is dropped.
+    expect(running.flatMap((event) => (event.toolUse ? [event.toolUse] : []))).toEqual([
+      {
+        id: "cmd-1",
+        name: "commandExecution",
+        status: "started",
+        kind: "execute",
+        title: "git status",
+        input: { command: "/bin/zsh -lc 'git status'" }
+      },
+      { id: "cmd-1", name: "commandExecution", status: "completed", kind: "execute", title: "git status", output: "clean" }
+    ]);
+    await headless.shutdown();
+  });
 });

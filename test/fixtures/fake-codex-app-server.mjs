@@ -7,6 +7,8 @@
 //   "NEVER"    - never completes until turn/interrupt
 //   "SLOW"     - completes after 3s
 //   "FAILTURN" - completes with status "failed"
+//   "TOOLS"    - reasoning deltas, a plan and a command item before the
+//                answer; a stray item/started for an old turn id
 //   otherwise  - two item/agentMessage/delta chunks + turn/completed with
 //                a final agentMessage item containing "echo:<prompt>"
 import { appendFileSync } from "node:fs";
@@ -142,6 +144,14 @@ readline
             if (prompt === "FAILTURN") {
               completeTurn(threadId, turnId, "failed", { error: { message: "turn exploded" } });
               return;
+            }
+            if (prompt === "TOOLS") {
+              const command = { type: "commandExecution", id: "cmd-1", command: "/bin/zsh -lc 'git status'", status: "inProgress", aggregatedOutput: null, exitCode: null };
+              notify("item/started", { threadId, turnId: "turn-0", item: { ...command, id: "stale" } });
+              notify("item/reasoning/summaryTextDelta", { threadId, turnId, itemId: "rs-1", delta: "thinking", summaryIndex: 0 });
+              notify("turn/plan/updated", { threadId, turnId, explanation: null, plan: [{ step: "Check", status: "inProgress" }] });
+              notify("item/started", { threadId, turnId, item: command });
+              notify("item/completed", { threadId, turnId, item: { ...command, status: "completed", aggregatedOutput: "clean", exitCode: 0 } });
             }
             const text = `echo:${prompt}`;
             notify("item/agentMessage/delta", {

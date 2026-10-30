@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ClaudeStreamConverter } from "../src/claudeTools.js";
+import { CodexAppServerProgress, CodexExecConverter } from "../src/codexProgress.js";
 import {
   TOOL_OUTPUT_LIMIT,
   TOOL_TITLE_LIMIT,
@@ -67,6 +68,124 @@ describe("claude cli fixtures", () => {
       { type: "assistant", parent_tool_use_id: null, message: { id: "n", content: [{ type: "thinking", thinking: "b" }] } }
     ].flatMap((message) => converter.convert(message));
     expect(updates).toEqual([{ thought: "a" }, { thought: "b" }]);
+  });
+});
+
+describe("codex fixtures", () => {
+  it("exec --json: commands and web searches; config warnings are not failures", () => {
+    const converter = new CodexExecConverter();
+    const { events, output } = convertFixture("codex-cli/exec.jsonl", converter);
+    expect(converter.error()).toBeUndefined();
+    const messages = readFixture("codex-cli/exec.jsonl").flatMap((line) => {
+      const item = line.item as { type?: string; text?: string } | undefined;
+      return line.type === "item.completed" && item?.type === "agent_message" ? [item.text] : [];
+    });
+    // The final output is the last agent_message, as plain `codex exec` printed.
+    expect(output).toBe(messages.at(-1)?.trim());
+    expectConformance(events, output ?? "");
+    const calls = mergedToolCalls(events);
+    expect(calls.map((call) => [call.kind, call.status])).toEqual([
+      ["search", "completed"],
+      ["execute", "completed"],
+      ["search", "completed"]
+    ]);
+    // The search query is only known on completion.
+    expect(calls[0]?.title).toBe("agent client protocol");
+    expect(calls[0]?.output).toContain("https://");
+    // The login-shell wrapper is stripped from the title, kept in the input.
+    expect(calls[1]?.title?.startsWith("pwd && rg --files")).toBe(true);
+    expect(calls[1]?.output).toContain("# Sample Project");
+  });
+
+  it("exec --json: reports turn.failed with the API message", () => {
+    const converter = new CodexExecConverter();
+    for (const message of [
+      { type: "turn.started" },
+      { type: "error", message: '{"type":"error","status":400,"error":{"message":"model not supported"}}' },
+      { type: "turn.failed", error: { message: '{"type":"error","status":400,"error":{"message":"model not supported"}}' } }
+    ]) {
+      converter.convert(message);
+    }
+    expect(converter.error()).toBe("model not supported");
+    expect(converter.output()).toBeUndefined();
+  });
+
+  it("exec --json: reasoning, file changes, mcp calls, todo lists and failed commands", () => {
+    const converter = new CodexExecConverter();
+    const events = [
+      { type: "item.completed", item: { id: "r", type: "reasoning", text: "**Planning**" } },
+      { type: "item.started", item: { id: "t", type: "todo_list", items: [{ text: "a", completed: false }] } },
+      { type: "item.started", item: { id: "c", type: "command_execution", command: "false", aggregated_output: "", exit_code: null, status: "in_progress" } },
+      { type: "item.updated", item: { id: "c", type: "command_execution", command: "false", aggregated_output: "x", exit_code: null, status: "in_progress" } },
+      { type: "item.completed", item: { id: "c", type: "command_execution", command: "false", aggregated_output: "boom", exit_code: 1, status: "failed" } },
+      { type: "item.completed", item: { id: "f", type: "file_change", changes: [{ path: "src/a.ts", kind: "update" }], status: "completed" } },
+      { type: "item.started", item: { id: "m", type: "mcp_tool_call", server: "docs", tool: "search", arguments: { q: 1 }, status: "in_progress" } },
+      { type: "item.completed", item: { id: "m", type: "mcp_tool_call", server: "docs", tool: "search", arguments: { q: 1 }, result: { content: [{ type: "text", text: "hit" }] }, status: "completed" } },
+      { type: "item.completed", item: { id: "t", type: "todo_list", items: [{ text: "a", completed: true }] } },
+      { type: "item.completed", item: { id: "a", type: "agent_message", text: "done" } },
+      { type: "turn.completed" }
+    ].flatMap((message) => converter.convert(message));
+    expect(converter.output()).toBe("done");
+    expectConformance(events, "done", { exact: true });
+    expect(events[0]).toEqual({ thought: "**Planning**" });
+    expect(events.flatMap((event) => (event.plan ? [event.plan] : []))).toEqual([
+      [{ content: "a", status: "pending" }],
+      [{ content: "a", status: "completed" }]
+    ]);
+    const calls = mergedToolCalls(events);
+    expect(calls.map((call) => [call.id, call.kind, call.title, call.status, call.output])).toEqual([
+      ["c", "execute", "false", "failed", "boom"],
+      ["f", "edit", "src/a.ts", "completed", undefined],
+      ["m", "other", "docs/search", "completed", "hit"]
+    ]);
+    expect(calls[1]?.locations).toEqual([{ path: "src/a.ts" }]);
+    // item.updated without a title/input change does not resend started.
+    expect(events.filter((event) => event.toolUse?.id === "c").map((event) => event.toolUse?.status)).toEqual([
+      "started",
+      "failed"
+    ]);
+  });
+
+  it("app-server: command items from a recorded turn", () => {
+    const progress = new CodexAppServerProgress();
+    const events = readFixture("codex-app-server/turn.jsonl").flatMap((line) =>
+      typeof line.method === "string" && line.params ? progress.convert(line.method, line.params as Record<string, unknown>) : []
+    );
+    expectConformance(events, "");
+    const calls = mergedToolCalls(events);
+    expect(calls.map((call) => [call.kind, call.title, call.status])).toEqual([
+      ["execute", "rg --files -g 'README.md' -g '*' | sed -n '1,200p'", "completed"],
+      ["execute", "sed -n '1p' README.md", "completed"]
+    ]);
+    expect(calls[1]?.output).toBe("# Sample Project\n");
+    // The recorded reasoning item carried no summary text.
+    expect(events.some((event) => event.thought)).toBe(false);
+  });
+
+  it("app-server: reasoning deltas, completed reasoning without deltas, plans and declined commands", () => {
+    const progress = new CodexAppServerProgress();
+    const events = [
+      ["item/reasoning/summaryTextDelta", { itemId: "r1", delta: "first", summaryIndex: 0 }],
+      ["item/reasoning/summaryTextDelta", { itemId: "r1", delta: "second", summaryIndex: 1 }],
+      ["item/completed", { item: { type: "reasoning", id: "r1", summary: ["first", "second"], content: [] } }],
+      ["item/completed", { item: { type: "reasoning", id: "r2", summary: ["whole"], content: [] } }],
+      ["turn/plan/updated", { plan: [{ step: "a", status: "inProgress" }, { step: "b", status: "pending" }] }],
+      ["item/started", { item: { type: "commandExecution", id: "c", command: "rm x", status: "inProgress" } }],
+      ["item/completed", { item: { type: "commandExecution", id: "c", command: "rm x", status: "declined", aggregatedOutput: null } }],
+      ["item/started", { item: { type: "webSearch", id: "w", query: "", action: { type: "other" } } }],
+      ["item/completed", { item: { type: "webSearch", id: "w", query: "acp", action: { type: "search", query: "acp" }, results: null } }]
+    ].flatMap(([method, params]) => progress.convert(method as string, params as Record<string, unknown>));
+    expect(events.flatMap((event) => (event.thought ? [event.thought] : []))).toEqual(["first", "\n\nsecond", "whole"]);
+    expect(events.find((event) => event.plan)?.plan).toEqual([
+      { content: "a", status: "in_progress" },
+      { content: "b", status: "pending" }
+    ]);
+    expectConformance(events, "");
+    const calls = mergedToolCalls(events);
+    expect(calls.map((call) => [call.kind, call.title, call.status])).toEqual([
+      ["execute", "rm x", "denied"],
+      ["search", "acp", "completed"]
+    ]);
   });
 });
 

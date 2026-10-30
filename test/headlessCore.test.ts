@@ -12,6 +12,27 @@ import {
 
 let tmpDir: string;
 
+/**
+ * Fake CLI source that prints `expression` as the final answer in every
+ * structured format headless_core reads: claude/grok stream-json `result`,
+ * a `codex exec --json` agent_message + turn.completed, and an agy
+ * stream-json `result`. Each converter ignores the other formats' lines.
+ */
+function structuredEcho(expression: string): string {
+  return [
+    `{ const out = ${expression};`,
+    "for (const message of [",
+    '  { type: "result", subtype: "success", is_error: false, result: out },',
+    '  { type: "item.completed", item: { id: "m", type: "agent_message", text: out } },',
+    '  { type: "turn.completed" },',
+    '  { event: "result", result: { status: "SUCCESS", response: out } }',
+    "]) process.stdout.write(JSON.stringify(message) + \"\\n\"); }"
+  ].join(" ");
+}
+
+/** structuredEcho of the argv the fake CLI received. */
+const STRUCTURED_ECHO_ARGV = structuredEcho("JSON.stringify(process.argv.slice(2))");
+
 beforeEach(async () => {
   tmpDir = await mkdtemp(path.join(tmpdir(), "headless-core-run-test-"));
 });
@@ -26,7 +47,7 @@ describe("createHeadlessCore", () => {
       "fake-codex.mjs",
       [
         "#!/usr/bin/env node",
-        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+        STRUCTURED_ECHO_ARGV
       ].join("\n")
     );
     const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
@@ -38,6 +59,7 @@ describe("createHeadlessCore", () => {
 
     expect(JSON.parse(output)).toEqual([
       "exec",
+      "--json",
       "--model",
       "gpt-5.5",
       "--config",
@@ -58,7 +80,7 @@ describe("createHeadlessCore", () => {
       "fake-codex-default.mjs",
       [
         "#!/usr/bin/env node",
-        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+        STRUCTURED_ECHO_ARGV
       ].join("\n")
     );
     const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
@@ -70,6 +92,7 @@ describe("createHeadlessCore", () => {
 
     expect(JSON.parse(output)).toEqual([
       "exec",
+      "--json",
       "--config",
       'approval_policy="never"',
       "--sandbox",
@@ -86,7 +109,7 @@ describe("createHeadlessCore", () => {
       "fake-codex-default-reasoning-effort.mjs",
       [
         "#!/usr/bin/env node",
-        "process.stdout.write(JSON.stringify(process.argv.slice(2)));"
+        STRUCTURED_ECHO_ARGV
       ].join("\n")
     );
     const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
@@ -98,6 +121,7 @@ describe("createHeadlessCore", () => {
 
     expect(JSON.parse(output)).toEqual([
       "exec",
+      "--json",
       "--model",
       "gpt-5.5",
       "--config",
@@ -497,7 +521,7 @@ describe("createHeadlessCore", () => {
           '    { slug: "gpt-6", supported_reasoning_levels: [{ effort: "none" }, { effort: "minimal" }, { effort: "low" }, { effort: "max" }] }',
           "  ] }));",
           "} else {",
-          "  process.stdout.write(JSON.stringify(args));",
+          `  ${STRUCTURED_ECHO_ARGV}`,
           "}"
         ].join("\n")
       );
@@ -548,7 +572,7 @@ describe("createHeadlessCore", () => {
     it("rejects an invalid effort string before contacting the provider", async () => {
       const bin = await writeExecutable(
         "fake-codex-invalid-effort.mjs",
-        ["#!/usr/bin/env node", "process.stdout.write(JSON.stringify(process.argv.slice(2)));"].join("\n")
+        ["#!/usr/bin/env node", STRUCTURED_ECHO_ARGV].join("\n")
       );
       const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
 
@@ -567,7 +591,7 @@ describe("createHeadlessCore", () => {
     it("treats omitted effort and explicit default identically", async () => {
       const bin = await writeExecutable(
         "fake-codex-default-equivalence.mjs",
-        ["#!/usr/bin/env node", "process.stdout.write(JSON.stringify(process.argv.slice(2)));"].join("\n")
+        ["#!/usr/bin/env node", STRUCTURED_ECHO_ARGV].join("\n")
       );
       const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
 
