@@ -127,7 +127,9 @@ async function sendMessage() {
       role: "assistant",
       content: data.reply || "(empty response)",
       elapsedMs: performance.now() - startedAt,
-      toolUses: data.toolUses
+      toolUses: data.toolUses,
+      thought: data.thought,
+      plan: data.plan
     });
     renderMessages();
     mergeRuntimeModels(agent, data.models);
@@ -408,6 +410,27 @@ function renderMessages() {
   for (const message of messages) {
     const node = document.createElement("article");
     node.className = `message ${message.role}`;
+    if (message.thought) {
+      const thought = document.createElement("details");
+      thought.className = "thought";
+      const summary = document.createElement("summary");
+      summary.textContent = "Thinking";
+      const text = document.createElement("div");
+      text.textContent = message.thought;
+      thought.append(summary, text);
+      node.append(thought);
+    }
+    if (Array.isArray(message.plan) && message.plan.length > 0) {
+      const plan = document.createElement("ol");
+      plan.className = "plan";
+      for (const entry of message.plan) {
+        const item = document.createElement("li");
+        item.className = `plan-entry ${entry.status}`;
+        item.textContent = entry.content;
+        plan.append(item);
+      }
+      node.append(plan);
+    }
     const body = document.createElement("div");
     body.textContent = message.content;
     node.append(body);
@@ -417,8 +440,9 @@ function renderMessages() {
       for (const toolUse of message.toolUses) {
         const item = document.createElement("li");
         item.className = `tool-use ${toolUse.status}`;
-        item.textContent = `${toolUse.status} ${toolUse.name}${formatToolInput(toolUse.input)}`;
-        if (toolUse.status === "denied" && toolUse.output) {
+        const label = toolUse.title ? `: ${toolUse.title}` : formatToolInput(toolUse.input);
+        item.textContent = `${toolUse.status} ${toolUse.kind ?? toolUse.name}${label}`;
+        if (toolUse.output) {
           item.title = toolUse.output;
         }
         tools.append(item);

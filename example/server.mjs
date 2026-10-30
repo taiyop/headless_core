@@ -205,7 +205,7 @@ async function runChat(body) {
   }
 
   const prompt = buildPrompt(messages);
-  const toolUses = new ToolUseLog();
+  const progress = new ProgressLog();
   const reply = await headless.run({
     agent: {
       provider: agent,
@@ -214,9 +214,10 @@ async function runChat(body) {
       ...(toolOptions ? { tools: exampleTools } : {})
     },
     prompt,
-    ...(toolOptions ? { cwd: toolOptions.cwd, timeoutMs: toolsTimeoutMs, onProgress: toolUses.onProgress } : {})
+    onProgress: progress.onProgress,
+    ...(toolOptions ? { cwd: toolOptions.cwd, timeoutMs: toolsTimeoutMs } : {})
   });
-  return { reply, toolUses: toolUses.list(), ...(toolOptions ? { workspace: toolOptions.cwd } : {}) };
+  return { reply, ...progress.result(), ...(toolOptions ? { workspace: toolOptions.cwd } : {}) };
 }
 
 /** Per-chat workspace: the agent clones and reads files there. */
@@ -227,24 +228,45 @@ async function toolRunOptions(chatId) {
   return { cwd };
 }
 
-/** Collects ProgressEvent.toolUse into one entry per tool call for the UI. */
-class ToolUseLog {
+/**
+ * Collects what onProgress reports besides the answer text, for the UI:
+ * one entry per tool call (events merged by id), the thinking text, and the
+ * latest plan snapshot. Every provider/transport reports what it can; see
+ * the README support table.
+ */
+class ProgressLog {
   #calls = new Map();
+  #thought = "";
+  #plan = undefined;
 
   onProgress = (event) => {
+    if (event.thought) {
+      this.#thought += event.thought;
+    }
+    if (event.plan) {
+      this.#plan = event.plan;
+    }
     const toolUse = event.toolUse;
     if (!toolUse) return;
-    const previous = this.#calls.get(toolUse.id);
+    // `started` may repeat once the title/input is known: merge by id.
+    const previous = this.#calls.get(toolUse.id) ?? {};
     this.#calls.set(toolUse.id, {
+      ...previous,
       name: toolUse.name,
       status: toolUse.status,
-      input: previous?.input ?? toolUse.input,
+      ...(toolUse.kind ? { kind: toolUse.kind } : {}),
+      ...(toolUse.title ? { title: toolUse.title } : {}),
+      ...(toolUse.input !== undefined ? { input: toolUse.input } : {}),
       ...(toolUse.output !== undefined ? { output: toolUse.output.slice(0, 500) } : {})
     });
   };
 
-  list() {
-    return [...this.#calls.values()];
+  result() {
+    return {
+      toolUses: [...this.#calls.values()],
+      ...(this.#thought ? { thought: this.#thought } : {}),
+      ...(this.#plan ? { plan: this.#plan } : {})
+    };
   }
 }
 
@@ -291,11 +313,12 @@ async function runSessionChat({ agent, transport, model, reasoningEffort, messag
   // Mark before running so a concurrent send on a fresh session does not also
   // transmit the full transcript.
   entry.hasHistory = true;
-  const toolUses = new ToolUseLog();
+  const progress = new ProgressLog();
   try {
     const reply = await entry.session.run({
       prompt,
-      ...(toolOptions ? { timeoutMs: toolsTimeoutMs, onProgress: toolUses.onProgress } : {})
+      onProgress: progress.onProgress,
+      ...(toolOptions ? { timeoutMs: toolsTimeoutMs } : {})
     });
     const models = await sessionModelIds(entry.session);
     if (models.length > 0) {
@@ -305,7 +328,7 @@ async function runSessionChat({ agent, transport, model, reasoningEffort, messag
       reply,
       sessionId: entry.session.id,
       models,
-      toolUses: toolUses.list(),
+      ...progress.result(),
       ...(entry.workspace ? { workspace: entry.workspace } : {})
     };
   } catch (error) {
