@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
 import { HeadlessSessionError } from "./errors.js";
+import { CodexAppServerProgress } from "./codexProgress.js";
 import { JsonRpcPeer } from "./jsonRpc.js";
+import { debugEvent } from "./progress.js";
 import {
   CONTROL_REQUEST_TIMEOUT_MS,
   type PersistentRuntime,
@@ -24,6 +26,8 @@ const KILL_GRACE_MS = 3_000;
 
 type CodexThreadHandler = {
   agentMessageDelta(turnId: string, itemId: string, delta: string): void;
+  /** Item, reasoning and plan notifications, converted by the session. */
+  progress(turnId: string, method: string, params: Record<string, unknown>): void;
   turnCompleted(turn: CodexTurn): void;
   turnError(turnId: string | undefined, message: string, willRetry: boolean): void;
 };
@@ -63,7 +67,8 @@ export class CodexAppServerRuntime implements PersistentRuntime {
 
   private constructor(
     private readonly child: ChildProcess,
-    command: string
+    command: string,
+    private readonly env: NodeJS.ProcessEnv
   ) {
     this.peer = new JsonRpcPeer(`codex app-server (${command})`, {
       stdin: child.stdin!,
@@ -102,7 +107,7 @@ export class CodexAppServerRuntime implements PersistentRuntime {
       throw new HeadlessSessionError("RUNTIME_START_FAILED", `Failed to spawn ${command} app-server`, { cause });
     }
 
-    const runtime = new CodexAppServerRuntime(child, command);
+    const runtime = new CodexAppServerRuntime(child, command, ctx.env);
     try {
       await new Promise<void>((resolve, reject) => {
         child.once("spawn", () => resolve());
@@ -238,8 +243,19 @@ export class CodexAppServerRuntime implements PersistentRuntime {
     const p = (params ?? {}) as Record<string, unknown>;
     const threadId = typeof p.threadId === "string" ? p.threadId : undefined;
     const handler = threadId ? this.threadHandlers.get(threadId) : undefined;
+    debugEvent(this.env, "codex:app-server", { method, params });
 
     switch (method) {
+      case "item/started":
+      case "item/completed":
+      case "item/reasoning/summaryTextDelta":
+      case "item/reasoning/textDelta":
+      case "turn/plan/updated": {
+        if (handler && typeof p.turnId === "string") {
+          handler.progress(p.turnId, method, p);
+        }
+        return;
+      }
       case "item/agentMessage/delta": {
         if (handler && typeof p.delta === "string" && typeof p.turnId === "string") {
           handler.agentMessageDelta(p.turnId, String(p.itemId ?? ""), p.delta);
@@ -311,6 +327,7 @@ export class CodexAppServerSession implements HeadlessSession {
   private activeTurnId: string | undefined;
   private activeTurnOptions: HeadlessSessionRunOptions | undefined;
   private accumulated = "";
+  private progress = new CodexAppServerProgress();
   private model: string | undefined;
   private effort: string | undefined;
   /** The model the thread actually runs (reported by thread/start). */
@@ -465,6 +482,7 @@ export class CodexAppServerSession implements HeadlessSession {
     }
 
     this.accumulated = "";
+    this.progress = new CodexAppServerProgress();
     const settlement = startTurn({
       timeoutMs: options.timeoutMs ?? this.ctx.timeoutMs,
       signal: options.signal,
@@ -504,6 +522,14 @@ export class CodexAppServerSession implements HeadlessSession {
       }
       this.accumulated += delta;
       emitSessionProgress(this.activeTurnOptions, this.agent, { state: "running", partialOutput: delta });
+    },
+    progress: (turnId, method, params) => {
+      if (turnId !== this.activeTurnId || !this.activeTurnOptions) {
+        return;
+      }
+      for (const update of this.progress.convert(method, params)) {
+        emitSessionProgress(this.activeTurnOptions, this.agent, { state: "running", ...update });
+      }
     },
     turnCompleted: (turn) => {
       if (turn.id !== this.activeTurnId || !this.activeTurn) {

@@ -311,12 +311,12 @@ describe("claude sdk sessions", () => {
     const events: ProgressEvent[] = [];
     await expect(session.run({ prompt: "tool", onProgress: (event) => void events.push(event) })).resolves.toBe("done");
     expect(events.flatMap((event) => (event.toolUse ? [event.toolUse] : []))).toEqual([
-      { id: "t1", name: "Bash", status: "started", input: { command: "git clone x" } },
-      { id: "t2", name: "Bash", status: "started", input: { command: "rm -rf /" } },
-      { id: "t2", name: "Bash", status: "denied", output: "denied by dontAsk" },
-      { id: "t1", name: "Bash", status: "completed", output: "cloned" }
+      { id: "t1", name: "Bash", kind: "execute", title: "git clone x", status: "started", input: { command: "git clone x" } },
+      { id: "t2", name: "Bash", kind: "execute", title: "rm -rf /", status: "started", input: { command: "rm -rf /" } },
+      { id: "t2", name: "Bash", kind: "execute", title: "rm -rf /", status: "denied", output: "denied by dontAsk" },
+      { id: "t1", name: "Bash", kind: "execute", title: "git clone x", status: "completed", output: "cloned" }
     ]);
-    expect(events.find((event) => event.toolUse)).toMatchObject({ state: "running", message: "Bash started" });
+    expect(events.find((event) => event.toolUse)).toMatchObject({ state: "running", message: "git clone x started" });
   });
 
   it("passes CLAUDE_SDK_BIN and the per-session cwd to the SDK", async () => {

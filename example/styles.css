@@ -287,6 +287,32 @@ button:hover:not(:disabled) {
   color: var(--danger);
 }
 
+.thought {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.thought summary {
+  cursor: pointer;
+}
+
+.plan {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.plan-entry.completed {
+  text-decoration: line-through;
+}
+
+.plan-entry.in_progress {
+  font-weight: 600;
+}
+
 .composer {
   display: grid;
   grid-template-columns: 1fr 96px;

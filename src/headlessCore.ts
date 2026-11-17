@@ -3,17 +3,20 @@ import { randomUUID } from "node:crypto";
 import { AgyAcpRuntime, AgyAcpSession, agyAcpRuntimeKey } from "./agyAcp.js";
 import { resolveAgyEffort } from "./agyModel.js";
 import { ClaudeSdkSession } from "./claudeSdk.js";
-import { ClaudeToolUseTracker, describeToolUse, resolveTools, type ResolvedTools } from "./claudeTools.js";
+import { ClaudeStreamConverter, resolveTools, type ResolvedTools } from "./claudeTools.js";
 import { CliSession } from "./cliSession.js";
 import {
   CodexAppServerRuntime,
   CodexAppServerSession,
   codexAppServerRuntimeKey
 } from "./codexAppServer.js";
+import { CodexExecConverter } from "./codexProgress.js";
 import { DevinAcpRuntime, DevinAcpSession, devinAcpRuntimeKey } from "./devinAcp.js";
 import { devinModelWithEffort, resolveDevinModel } from "./devinModel.js";
 import { GrokAcpRuntime, GrokAcpSession, grokAcpRuntimeKey } from "./grokAcp.js";
 import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
+import { AgyStreamConverter } from "./agyProgress.js";
+import { debugEvent, grokToolKind, grokToolResultText, type ProgressUpdate } from "./progress.js";
 import { EffortError, ToolsError } from "./errors.js";
 import { getAllUsageLimits, getUsageLimits } from "./usageLimits.js";
 import { agyModelIds, codexModelEffortLevels, devinModelVariantUids } from "./modelCatalog.js";
@@ -48,8 +51,17 @@ const GROK_SUPPORTED_EFFORTS: readonly EffortLevel[] = ["low", "medium", "high",
 type CommandSpec = {
   command: string;
   args: string[];
-  /** stdout is Claude Code `--output-format stream-json` (claude with tools enabled). */
-  claudeStream?: boolean;
+  /** stdout is one JSON event per line; creates the converter for one run. */
+  stream?: () => CliStreamConverter;
+};
+
+/** Converts the JSON events of one structured CLI run. */
+export type CliStreamConverter = {
+  convert(message: Record<string, unknown>): ProgressUpdate[];
+  /** The failure the stream reported (error result, turn.failed), if any. */
+  error(): string | undefined;
+  /** The final output once the stream reached its terminal result, else undefined. */
+  output(): string | undefined;
 };
 
 type RunFailure = {
@@ -194,8 +206,8 @@ async function runOnce(ctx: SessionContext, options: HeadlessRunOptions): Promis
   }
 
   const spec = await commandFor(options.agent, options.prompt, ctx.env, timeoutMs);
-  if (spec.claudeStream) {
-    return runClaudeStream(ctx, options, spec, timeoutMs);
+  if (spec.stream) {
+    return runStreamingCli(ctx, options, spec, spec.stream(), timeoutMs);
   }
   const { command, args } = spec;
   await emitProgress(options, { state: "starting", agent: options.agent, message: `Starting ${options.agent.provider}` });
@@ -218,22 +230,22 @@ async function runOnce(ctx: SessionContext, options: HeadlessRunOptions): Promis
 }
 
 /**
- * Runs `claude --output-format stream-json`: text deltas of the top-level
- * agent stream as `running` partialOutput, tool calls as `toolUse` events,
- * and the `result` message becomes the final output.
+ * Runs a CLI whose stdout is one JSON event per line (claude/grok
+ * stream-json, `codex exec --json`, agy stream-json). The converter turns
+ * each event into `running` progress and decides the final output; stderr is
+ * only used to explain a failure, never streamed as output.
  */
-async function runClaudeStream(
+async function runStreamingCli(
   ctx: SessionContext,
   options: HeadlessRunOptions,
   spec: CommandSpec,
+  converter: CliStreamConverter,
   timeoutMs: number
 ): Promise<string> {
   const agent = options.agent;
-  const tracker = new ClaudeToolUseTracker();
+  const provider = agent.provider;
   let buffer = "";
   let text = "";
-  let result: Record<string, unknown> | undefined;
-  let assistantError: string | undefined;
 
   const handleLine = async (line: string) => {
     let message: Record<string, unknown>;
@@ -242,28 +254,12 @@ async function runClaudeStream(
     } catch {
       return;
     }
-    if (message.type === "stream_event") {
-      const event = message.event as { type?: string; delta?: { type?: string; text?: string } } | undefined;
-      if (
-        message.parent_tool_use_id == null &&
-        event?.type === "content_block_delta" &&
-        event.delta?.type === "text_delta" &&
-        event.delta.text
-      ) {
-        text += event.delta.text;
-        await emitProgress(options, { state: "running", agent, partialOutput: event.delta.text });
+    debugEvent(ctx.env, `${provider}:cli`, message);
+    for (const update of converter.convert(message)) {
+      if (update.partialOutput) {
+        text += update.partialOutput;
       }
-      return;
-    }
-    if (message.type === "result") {
-      result = message;
-      return;
-    }
-    if (message.type === "assistant" && message.parent_tool_use_id == null && typeof message.error === "string") {
-      assistantError = message.error;
-    }
-    for (const toolUse of tracker.events(message)) {
-      await emitProgress(options, { state: "running", agent, toolUse, message: describeToolUse(toolUse) });
+      await emitProgress(options, { state: "running", agent, ...update });
     }
   };
 
@@ -290,16 +286,8 @@ async function runClaudeStream(
     }
     await lines;
   };
-  const resultError = (): string | undefined => {
-    if (!result || (result.subtype === "success" && result.is_error !== true)) {
-      return undefined;
-    }
-    const errors = Array.isArray(result.errors) ? result.errors.join("\n") : "";
-    const details = (typeof result.result === "string" && result.result) || errors || String(result.subtype);
-    return `${assistantError ? `${assistantError}: ` : ""}${details || "claude run failed"}`;
-  };
 
-  await emitProgress(options, { state: "starting", agent, message: `Starting ${agent.provider}` });
+  await emitProgress(options, { state: "starting", agent, message: `Starting ${provider}` });
   let stderr: string;
   try {
     ({ stderr } = await runCommand(spec.command, spec.args, {
@@ -317,22 +305,28 @@ async function runClaudeStream(
       // Timeout/abort keeps its own message and kind.
       throw createRunFailure(failure.error.message, text, failure.stderr, failure.error.kind);
     }
-    // Prefer the result's error over raw stream-json stdout.
+    // Prefer the stream's own error over raw JSON stdout.
     const message =
-      resultError() || failure.stderr.trim() || (failure.stdout ? "claude exited with an error" : failure.error.message);
+      converter.error() ||
+      failure.stderr.trim() ||
+      (failure.stdout ? `${provider} exited with an error` : failure.error.message);
     throw createRunFailure(message, text, failure.stderr, classifyError(message));
   }
   await flush();
 
-  const message = resultError();
+  const message = converter.error();
   if (message) {
     throw createRunFailure(message, text, stderr, classifyError(message));
   }
-  if (!result) {
-    const detail = stderr.trim() || "claude exited without a result";
+  const output = converter.output();
+  if (output === undefined) {
+    const detail = stderr.trim() || `${provider} exited without a result`;
     throw createRunFailure(detail, text, stderr, classifyError(detail));
   }
-  const output = (typeof result.result === "string" && result.result ? result.result : text).trim();
+  const permissionDenial = headlessPermissionDenialMessage(output, stderr);
+  if (permissionDenial) {
+    throw createRunFailure(permissionDenial, text, stderr, classifyError(permissionDenial));
+  }
   await emitProgress(options, { state: "completed", agent, partialOutput: output });
   return output;
 }
@@ -383,25 +377,29 @@ function validateRunOptions(options: HeadlessRunOptions): void {
 }
 
 /**
+ * Both posture variants print stream-json: text and thinking deltas arrive as
+ * they are generated (text output prints nothing until the end), and the
+ * `result` message carries the same final text `--output-format text` prints.
+ */
+function claudeStreamArgs(): string[] {
+  return ["--output-format", "stream-json", "--verbose", "--include-partial-messages"];
+}
+
+/**
  * Headless runs are text-in/text-out by default, so the agent must not use
  * tools. Otherwise it may try to write a file and stop to ask for permission
  * instead of printing the answer. Mirrors the codex read-only sandbox.
  */
 function claudeNoToolArgs(): string[] {
-  return ["--output-format", "text", "--tools", ""];
+  return ["--tools", ""];
 }
 
 /**
- * Opt-in tools. stream-json streams text deltas and tool calls (text output
- * prints nothing until the end). Anything not allowed is denied instead of
- * prompting, because a headless run has no approval surface.
+ * Opt-in tools. Anything not allowed is denied instead of prompting, because
+ * a headless run has no approval surface.
  */
 function claudeToolArgs(tools: ResolvedTools): string[] {
   return [
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--include-partial-messages",
     "--tools",
     tools.allow.join(","),
     "--permission-mode",
@@ -455,6 +453,9 @@ async function commandFor(
       command: env.CODEX_BIN || "codex",
       args: [
         "exec",
+        // JSONL events: reasoning, commands, file changes and searches arrive
+        // as items; the last agent_message is the answer plain stdout printed.
+        "--json",
         ...modelArgs,
         "--config",
         'approval_policy="never"',
@@ -465,7 +466,8 @@ async function commandFor(
         "--color",
         "never",
         prompt
-      ]
+      ],
+      stream: () => new CodexExecConverter()
     };
   }
 
@@ -478,6 +480,7 @@ async function commandFor(
       command: env.CLAUDE_BIN || "claude",
       args: [
         "--print",
+        ...claudeStreamArgs(),
         ...(tools ? claudeToolArgs(tools) : claudeNoToolArgs()),
         ...modelArgs,
         ...(effort ? ["--effort", effort] : []),
@@ -485,7 +488,7 @@ async function commandFor(
         "--",
         prompt
       ],
-      claudeStream: tools !== undefined
+      stream: () => new ClaudeStreamConverter()
     };
   }
 
@@ -505,9 +508,14 @@ async function commandFor(
         "--print-timeout",
         formatAgyPrintTimeout(timeoutMs),
         ...(resolved.flagEffort ? ["--effort", resolved.flagEffort] : []),
+        // Must precede --print: --print takes the prompt as its value and
+        // agy rejects a run whose prompt slot holds another flag.
+        "--output-format",
+        "stream-json",
         "--print",
         prompt
-      ]
+      ],
+      stream: () => new AgyStreamConverter()
     };
   }
 
@@ -558,11 +566,16 @@ async function commandFor(
     args: [
       ...modelArgs,
       ...(effort ? ["--effort", effort] : []),
+      // streaming-messages-json is Claude Code stream-json: with
+      // --include-partial-messages it carries text *and* thinking deltas,
+      // which streaming-json (ACP-shaped, no thinking) does not.
       "--output-format",
-      "plain",
+      "streaming-messages-json",
+      "--include-partial-messages",
       "--single",
       prompt
-    ]
+    ],
+    stream: () => new ClaudeStreamConverter("grok", { kindOf: grokToolKind, resultText: grokToolResultText })
   };
 }
 

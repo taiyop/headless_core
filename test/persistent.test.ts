@@ -1438,7 +1438,16 @@ describe("transport validation and cli sessions", () => {
 
   it("createSession without transport stays a stateless CLI session", async () => {
     const bin = path.join(tmpDir, "fake-codex-cli.mjs");
-    await writeFile(bin, '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)));\n');
+    // Answers like `codex exec --json`: the argv as the final agent_message.
+    await writeFile(
+      bin,
+      [
+        "#!/usr/bin/env node",
+        "const text = JSON.stringify(process.argv.slice(2));",
+        'process.stdout.write(JSON.stringify({ type: "item.completed", item: { id: "m", type: "agent_message", text } }) + "\\n");',
+        'process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");'
+      ].join("\n")
+    );
     await chmod(bin, 0o755);
     const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin } });
 
@@ -1452,5 +1461,78 @@ describe("transport validation and cli sessions", () => {
     await session.reset();
     await session.close();
     await expectErrorCode(session.run({ prompt: "x" }), "SESSION_CLOSED");
+  });
+});
+
+describe("acp progress events", () => {
+  const providers = [
+    { provider: "devin", fixture: "fake-devin-acp.mjs", envKey: "DEVIN_BIN" },
+    { provider: "agy", fixture: "fake-agy-acp-server.mjs", envKey: "AGY_ACP_BIN" },
+    { provider: "grok", fixture: "fake-grok-acp.mjs", envKey: "GROK_BIN" }
+  ] as const;
+
+  for (const { provider, fixture, envKey } of providers) {
+    it(`${provider}: reports thoughts, plans and tool calls without changing the output`, async () => {
+      const bin = await installFixture(fixture);
+      const headless = createHeadlessCore({ env: { ...process.env, [envKey]: bin, FAKE_LOG: logPath } });
+      const session = await headless.createSession({ agent: { provider, transport: "acp" } });
+      const events: ProgressEvent[] = [];
+      const output = await session.run({ prompt: "TOOLS", onProgress: (event) => void events.push(event) });
+      // The stray update the fake sends after the turn must not be reported.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(output).toBe("answer");
+      expect(deltasOf(events)).toBe("answer");
+      const running = events.filter((event) => event.state === "running");
+      expect(running.map((event) => event.thought).filter(Boolean)).toEqual(["thinking"]);
+      expect(running.find((event) => event.plan)?.plan).toEqual([
+        { content: "Read", priority: "high", status: "in_progress" }
+      ]);
+      expect(running.flatMap((event) => (event.toolUse ? [event.toolUse.status] : []))).toEqual([
+        "started",
+        "started",
+        "completed"
+      ]);
+      expect(running.at(-2)?.toolUse).toEqual({
+        id: "tc-9",
+        name: "README.md",
+        status: "completed",
+        kind: "read",
+        title: "README.md",
+        locations: [{ path: "README.md", line: 1 }],
+        output: "# Title"
+      });
+      expect(events.at(-1)?.state).toBe("completed");
+      await headless.shutdown();
+    });
+  }
+});
+
+describe("codex app-server progress events", () => {
+  it("reports reasoning, plans and command items of the active turn only", async () => {
+    const bin = await installFixture("fake-codex-app-server.mjs");
+    const headless = createHeadlessCore({ env: { ...process.env, CODEX_BIN: bin, FAKE_LOG: logPath } });
+    const session = await headless.createSession({ agent: { provider: "codex", transport: "app-server" } });
+    const events: ProgressEvent[] = [];
+    const output = await session.run({ prompt: "TOOLS", onProgress: (event) => void events.push(event) });
+
+    expect(output).toBe("echo:TOOLS");
+    expect(deltasOf(events)).toBe("echo:TOOLS");
+    const running = events.filter((event) => event.state === "running");
+    expect(running.map((event) => event.thought).filter(Boolean)).toEqual(["thinking"]);
+    expect(running.find((event) => event.plan)?.plan).toEqual([{ content: "Check", status: "in_progress" }]);
+    // The item for another turn id is dropped.
+    expect(running.flatMap((event) => (event.toolUse ? [event.toolUse] : []))).toEqual([
+      {
+        id: "cmd-1",
+        name: "commandExecution",
+        status: "started",
+        kind: "execute",
+        title: "git status",
+        input: { command: "/bin/zsh -lc 'git status'" }
+      },
+      { id: "cmd-1", name: "commandExecution", status: "completed", kind: "execute", title: "git status", output: "clean" }
+    ]);
+    await headless.shutdown();
   });
 });

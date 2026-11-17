@@ -8,7 +8,7 @@ It allows you to run local CLIs such as Claude Code, Codex, Grok, Agy, and Devin
 
 - CLI execution for Claude Code / Codex / Grok / Agy / Devin
 - TypeScript API
-- Progress notifications for intermediate output (and claude tool calls) via `onProgress`
+- Progress notifications via `onProgress`: answer deltas, thinking, tool calls (commands, file reads/edits, searches) and plans, in one shape for every provider
 - Opt-in tool use for claude (clone repositories, read files, fetch the web)
 - Cancellation using `timeoutMs` and `AbortSignal`
 - Provider-specific model and reasoning effort option conversion
@@ -292,10 +292,69 @@ For devin ACP sessions the `model` config option advertises variant uids that em
 | state | `partialOutput` | notes |
 | --- | --- | --- |
 | `starting` | — | `message` names the provider |
-| `running` | An **incremental chunk** (delta), not the text so far. Concatenate the chunks to rebuild the streamed output | Tool calls arrive as `running` events with `toolUse` set (claude with `agent.tools`) |
+| `running` | An **incremental chunk** (delta), not the text so far. Concatenate the chunks to rebuild the streamed output | Thinking, tool calls and plans arrive as `running` events with `thought`, `toolUse` or `plan` set instead |
 | `completed` | The full final output (same as the resolved value) | |
 | `failed` | The output collected before the failure | `error.kind` is `agent_stopped` for timeout/abort |
 | `fallback` | — | `onFallback` is about to run |
+
+Besides the answer text, `running` events carry what the agent is doing, in the same shape for every provider, so one renderer covers them all:
+
+| field | content |
+| --- | --- |
+| `thought` | A delta of the agent's thinking (including summarized reasoning). Never set together with `partialOutput`, and never part of the final output |
+| `toolUse` | A tool call: `{ id, name, status, kind?, title?, locations?, input?, output?, parentToolUseId? }`. Merge events by `id`: `started` can repeat once the title or input is known, followed by exactly one `completed` / `failed` / `denied` |
+| `toolUse.kind` | `ToolKind`, aligned with ACP: `read` / `edit` / `delete` / `move` / `search` / `execute` / `think` / `fetch` / `other` |
+| `toolUse.title` | One human-readable line, e.g. `git status`, `src/index.ts`, a search query (at most `TOOL_TITLE_LIMIT` = 200 characters) |
+| `toolUse.locations` | Files the call reads or changes: `{ path, line? }[]` |
+| `toolUse.output` | The result as text, truncated to `TOOL_OUTPUT_LIMIT` (8192) characters |
+| `plan` | The agent's work plan, always the full current snapshot: `{ content, status: "pending" \| "in_progress" \| "completed", priority? }[]` |
+
+```ts
+await headless.run({
+  agent: { provider: "codex" },
+  prompt: "List the files here, then read the README.",
+  onProgress(event) {
+    if (event.thought) renderThinking(event.thought);
+    else if (event.toolUse) renderToolCall(event.toolUse); // merge by event.toolUse.id
+    else if (event.plan) renderPlan(event.plan);
+    else if (event.state === "running" && event.partialOutput) appendAnswer(event.partialOutput);
+  }
+});
+```
+
+What each provider/transport reports:
+
+| provider | transport | text deltas | thought | tools | plan |
+| --- | --- | --- | --- | --- | --- |
+| claude | `cli` | ✓ | ✓ ¹ | ✓ (with `agent.tools`) | ✓ TodoWrite ² |
+| claude | `sdk` | ✓ | ✓ ¹ | ✓ (with `agent.tools`) | ✓ TodoWrite ² |
+| codex | `cli` | per message ³ | ✓ reasoning items | ✓ commands, file changes, web search, MCP | ✓ `todo_list` |
+| codex | `app-server` | ✓ | ✓ reasoning deltas | ✓ commands, file changes, web search, MCP | ✓ `turn/plan/updated` |
+| agy | `cli` | ✓ | — (agy reports only thinking token counts) | ✓ | — |
+| agy | `acp` | ✓ | ✓ when the server sends thought chunks | ✓ | ✓ when the server sends plans |
+| grok | `cli` | ✓ | ✓ | ✓ | ✓ `todo_write` todo lists ² |
+| grok | `acp` | ✓ | ✓ | ✓ | ✓ |
+| devin | `cli` | stdout as printed | — | — | — |
+| devin | `acp` | ✓ | ✓ | ✓ | ✓ |
+
+¹ claude 2.1.312 streams thinking deltas with empty text (thinking display `updates`), so no `thought` is reported with that build; thinking text is forwarded whenever the CLI/SDK sends it.
+² Only when the tool is available and used: claude 2.1.312 does not offer TodoWrite, and the grok `todo_write` input shape is unverified.
+³ `codex exec --json` delivers each agent message whole, not token by token.
+
+devin's CLI has no structured output (only the human-readable `--verbosity`, which is not parsed). To show devin's thinking and tool calls, use `transport: "acp"`.
+
+The structured CLI modes were verified with codex-cli 0.159.3 (`exec --json`), claude 2.1.312 (`stream-json`), agy 1.4.10 (`--output-format stream-json`) and grok 1.0.70 (`--output-format streaming-messages-json`); older builds without these options are not supported by the `cli` transport.
+
+### Debugging raw events
+
+Set `HEADLESS_CORE_DEBUG_EVENTS=1` (in `createHeadlessCore({ env })` or the process environment) to write every raw event a transport receives to stderr, one JSON line each: CLI stdout events, codex app-server notifications, ACP `session/update` params and Agent SDK messages.
+
+```bash
+HEADLESS_CORE_DEBUG_EVENTS=1 node app.mjs 2> events.jsonl
+# {"headlessCoreEvent":"codex:cli","event":{"type":"item.completed","item":{...}}}
+```
+
+Nothing is written when the variable is unset.
 
 ## Tool use (claude)
 
@@ -336,8 +395,8 @@ const output = await headless.run({
 | `sdk` | `tools`, `permissionMode`, `allowedTools`, `permissionPrompts: "none"` (plus `allowDangerouslySkipPermissions` for `bypassPermissions`) |
 
 - A run never waits for approval: anything not allowed is denied at once, Claude is told so, and the run continues. The denial is reported as a `toolUse` event with `status: "denied"` and the run completes normally — a timeout, in contrast, fails with `error.kind: "agent_stopped"`.
-- `toolUse` events: `started` (with `input`) → `completed` / `failed` (tool error, with `output`) or `denied` (with the reason in `output`). `parentToolUseId` is set for calls made inside a subagent. Only top-level text (not subagent text) is streamed as `partialOutput`, and the `result` message becomes the final output.
-- The agent works in `cwd` — `HeadlessCoreConfig.cwd`, or the per-call `cwd` on `run()` / `createSession()` (e.g. one clone directory per conversation). The `cli` transport uses `stream-json` only when tools are enabled; text-only runs keep `--output-format text`.
+- `toolUse` events: `started` (with `input`, `kind` and `title`) → `completed` / `failed` (tool error, with `output`) or `denied` (with the reason in `output`). `parentToolUseId` is set for calls made inside a subagent. Only top-level text (not subagent text) is streamed as `partialOutput`, and the `result` message becomes the final output.
+- The agent works in `cwd` — `HeadlessCoreConfig.cwd`, or the per-call `cwd` on `run()` / `createSession()` (e.g. one clone directory per conversation). The `cli` transport always runs `stream-json`; text-only runs add `--tools ""` and return the same `result` text `--output-format text` printed.
 - Any other provider rejects `agent.tools` with `ToolsError` (`UNSUPPORTED_TOOLS`); a malformed spec raises `INVALID_TOOLS`. Neither is routed through `onFallback`.
 - Tool runs take longer than text answers — raise `timeoutMs` accordingly.
 
@@ -422,10 +481,10 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 
 | agent | Headless behavior |
 | --- | --- |
-| Codex | `--sandbox read-only` (no file writes) |
-| Claude Code | `--tools ""` (no tools; text-in/text-out only). The `sdk` transport keeps the same posture: `tools: []` and `permissionMode: "dontAsk"`. `agent.tools` opts in to tools without ever waiting for approval (see Tool use). The prompt is passed after `--` |
-| Agy | `--dangerously-skip-permissions` and `--mode accept-edits` so non-interactive `--print` can run tools and write files (e.g. image generation). `--print-timeout` matches the run `timeoutMs`. If a tool is still auto-denied, Agy may exit 0 with an empty stdout and a stderr notice; that is treated as a failed run. The `acp` transport keeps the same posture: sessions select an edit-capable mode (`accept-edits`/`auto_edit`/`yolo`) and `session/request_permission` is auto-approved. |
-| Grok | No special sandbox flags (`grok --single` headless runs never pause for tool prompts). The `acp` transport keeps the same posture: `grok agent` runs with `--always-approve` and `session/request_permission` is auto-approved |
+| Codex | `--sandbox read-only` (no file writes). Runs `codex exec --json`; the last agent message is the output and stderr is used only for error messages |
+| Claude Code | `--tools ""` (no tools; text-in/text-out only) with `--output-format stream-json --verbose --include-partial-messages`. The `sdk` transport keeps the same posture: `tools: []` and `permissionMode: "dontAsk"`. `agent.tools` opts in to tools without ever waiting for approval (see Tool use). The prompt is passed after `--` |
+| Agy | `--dangerously-skip-permissions` and `--mode accept-edits` so non-interactive `--print` can run tools and write files (e.g. image generation). `--print-timeout` matches the run `timeoutMs`. Runs `--output-format stream-json` (placed before `--print`, which takes the prompt as its value). If a tool is still auto-denied, Agy may exit 0 with an empty stdout and a stderr notice; that is treated as a failed run. The `acp` transport keeps the same posture: sessions select an edit-capable mode (`accept-edits`/`auto_edit`/`yolo`) and `session/request_permission` is auto-approved. |
+| Grok | No special sandbox flags (`grok --single` headless runs never pause for tool prompts). Runs `--output-format streaming-messages-json --include-partial-messages`. The `acp` transport keeps the same posture: `grok agent` runs with `--always-approve` and `session/request_permission` is auto-approved |
 | Devin | `--print --respect-workspace-trust false --permission-mode auto` (read-only tools auto-approved; no file writes). The prompt is passed after `--` |
 
 ## Models Config

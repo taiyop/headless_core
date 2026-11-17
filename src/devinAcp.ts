@@ -9,6 +9,8 @@ import {
   type PersistentRuntime,
   type SessionContext
 } from "./runtimeManager.js";
+import { AcpProgressConverter } from "./acpProgress.js";
+import { debugEvent } from "./progress.js";
 import { emitSessionProgress, sessionErrorKind, startTurn, type TurnSettlement } from "./turnTracker.js";
 import {
   DEFAULT_MODEL_ID,
@@ -114,6 +116,7 @@ export class DevinAcpRuntime implements PersistentRuntime {
       const app = acpModule.client({ name: "headless-core" });
       const sessionHandlers = new Map<string, SessionUpdateHandler>();
       app.onNotification("session/update", ({ params }) => {
+        debugEvent(ctx.env, "devin:acp", params);
         sessionHandlers.get(params.sessionId)?.(params.update);
       });
       app.onRequest("session/request_permission", ({ params }) => denyPermission(params));
@@ -233,6 +236,7 @@ export class DevinAcpSession implements HeadlessSession {
   private activeTurn: TurnSettlement | undefined;
   private activeTurnOptions: HeadlessSessionRunOptions | undefined;
   private accumulated = "";
+  private progress = new AcpProgressConverter();
   private model: string | undefined;
   private effort: string | undefined;
   private released = false;
@@ -352,6 +356,7 @@ export class DevinAcpSession implements HeadlessSession {
     emitSessionProgress(options, this.agent, { state: "starting", message: `Starting ${this.provider} turn` });
 
     this.accumulated = "";
+    this.progress = new AcpProgressConverter();
     this.activeTurnOptions = options;
     const settlement = startTurn({
       timeoutMs: options.timeoutMs ?? this.ctx.timeoutMs,
@@ -384,6 +389,7 @@ export class DevinAcpSession implements HeadlessSession {
       if (this.activeTurn === settlement) {
         this.activeTurn = undefined;
         this.activeTurnOptions = undefined;
+        this.progress.reset();
       }
     });
 
@@ -419,13 +425,15 @@ export class DevinAcpSession implements HeadlessSession {
   }
 
   private readonly updateHandler: SessionUpdateHandler = (update) => {
-    if (update.sessionUpdate === "agent_message_chunk") {
-      const text = contentText(update.content);
-      if (text && this.activeTurn && this.activeTurnOptions) {
-        this.accumulated += text;
-        emitSessionProgress(this.activeTurnOptions, this.agent, { state: "running", partialOutput: text });
+    if (this.activeTurn && this.activeTurnOptions) {
+      // Message chunks build the answer; thoughts, tool calls and plans are
+      // progress only and never reach `accumulated`.
+      for (const event of this.progress.convert(update)) {
+        if (event.partialOutput) {
+          this.accumulated += event.partialOutput;
+        }
+        emitSessionProgress(this.activeTurnOptions, this.agent, { state: "running", ...event });
       }
-      return;
     }
     if (update.sessionUpdate === "config_option_update") {
       this.configOptions = update.configOptions ?? this.configOptions;
@@ -636,10 +644,6 @@ function flattenConfigOptionValues(option: acp.SessionConfigOption): ConfigOptio
   return values;
 }
 
-function contentText(content: unknown): string {
-  const block = content as { type?: string; text?: string } | undefined;
-  return block?.type === "text" && typeof block.text === "string" ? block.text : "";
-}
 
 function normalize(value: string | undefined, defaultId: string): string | undefined {
   return value && value !== defaultId ? value : undefined;

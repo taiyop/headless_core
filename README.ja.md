@@ -8,7 +8,7 @@ Claude Code、Codex、Grok、Agy、Devin などのローカル CLI を、同じ 
 
 - Claude Code / Codex / Grok / Agy / Devin の CLI 実行
 - TypeScript API
-- 途中出力（と claude のツール呼び出し）を `onProgress` で通知
+- `onProgress` で本文の差分・思考・ツール呼び出し（コマンド、ファイルの読み取り・編集、検索）・計画を、全 provider 共通の形で通知
 - claude のツール使用をオプトインで有効化（リポジトリの clone、ファイル読み取り、Web 取得）
 - `timeoutMs` と `AbortSignal` による停止
 - provider 別の model / reasoning effort option 変換
@@ -292,10 +292,69 @@ devin の ACP session では、`model` config option が thinking level 埋め�
 | state | `partialOutput` | 備考 |
 | --- | --- | --- |
 | `starting` | — | `message` に provider 名 |
-| `running` | **差分**（その時点までの累積ではない）。chunk を連結するとストリーミングされた出力になる | ツール呼び出しは `toolUse` 付きの `running` event で届く（`agent.tools` を指定した claude） |
-| `completed` | 最終出力の全文（戻り値と同じ） | |
-| `failed` | 失敗までに得られた出力 | timeout / abort の `error.kind` は `agent_stopped` |
-| `fallback` | — | `onFallback` を実行する直前 |
+| `running` | **差分**（その時点までの累積ではない）。chunk を連結するとストリーミングされた出力になる | 思考・ツール呼び出し・計画は、代わりに `thought` / `toolUse` / `plan` を持つ `running` event で届く |
+| `completed` | 最終出力全体（戻り値と同じ） | |
+| `failed` | 失敗までに得られた出力 | timeout / abort は `error.kind: "agent_stopped"` |
+| `fallback` | — | `onFallback` を呼ぶ直前 |
+
+`running` event は本文のほかに、エージェントが何をしているかを全 provider 共通の形で運びます。表示コードは provider を意識せずに 1 つで済みます。
+
+| フィールド | 内容 |
+| --- | --- |
+| `thought` | 思考テキストの差分（要約された思考を含む）。`partialOutput` と同じ event には入らず、最終出力にも混ざらない |
+| `toolUse` | ツール呼び出し: `{ id, name, status, kind?, title?, locations?, input?, output?, parentToolUseId? }`。`id` ごとにマージする。title や input が後から確定すると `started` が再送され、最後に `completed` / `failed` / `denied` のどれかが 1 回だけ届く |
+| `toolUse.kind` | `ToolKind`（ACP に準拠）: `read` / `edit` / `delete` / `move` / `search` / `execute` / `think` / `fetch` / `other` |
+| `toolUse.title` | 人が読む 1 行の説明（例: `git status`、`src/index.ts`、検索クエリ）。最大 `TOOL_TITLE_LIMIT`（200）文字 |
+| `toolUse.locations` | 読んだ・変更したファイル: `{ path, line? }[]` |
+| `toolUse.output` | 結果のテキスト。`TOOL_OUTPUT_LIMIT`（8192）文字で切り詰め |
+| `plan` | 作業計画。毎回、全体のスナップショット: `{ content, status: "pending" \| "in_progress" \| "completed", priority? }[]` |
+
+```ts
+await headless.run({
+  agent: { provider: "codex" },
+  prompt: "ファイル一覧を見てから README を読んで",
+  onProgress(event) {
+    if (event.thought) renderThinking(event.thought);
+    else if (event.toolUse) renderToolCall(event.toolUse); // event.toolUse.id ごとにマージ
+    else if (event.plan) renderPlan(event.plan);
+    else if (event.state === "running" && event.partialOutput) appendAnswer(event.partialOutput);
+  }
+});
+```
+
+provider / transport ごとの対応:
+
+| provider | transport | 本文の差分 | 思考 | ツール | 計画 |
+| --- | --- | --- | --- | --- | --- |
+| claude | `cli` | ✓ | ✓ ¹ | ✓（`agent.tools` 指定時） | ✓ TodoWrite ² |
+| claude | `sdk` | ✓ | ✓ ¹ | ✓（`agent.tools` 指定時） | ✓ TodoWrite ² |
+| codex | `cli` | メッセージ単位 ³ | ✓ reasoning item | ✓ コマンド・ファイル変更・Web 検索・MCP | ✓ `todo_list` |
+| codex | `app-server` | ✓ | ✓ reasoning の差分 | ✓ コマンド・ファイル変更・Web 検索・MCP | ✓ `turn/plan/updated` |
+| agy | `cli` | ✓ | —（agy は思考のトークン数しか出さない） | ✓ | — |
+| agy | `acp` | ✓ | ✓ server が thought chunk を送る場合 | ✓ | ✓ server が plan を送る場合 |
+| grok | `cli` | ✓ | ✓ | ✓ | ✓ `todo_write` の todo リスト ² |
+| grok | `acp` | ✓ | ✓ | ✓ | ✓ |
+| devin | `cli` | stdout のまま | — | — | — |
+| devin | `acp` | ✓ | ✓ | ✓ | ✓ |
+
+¹ claude 2.1.312 は thinking の差分を空のテキストで送る（thinking display が `updates`）ため、この build では `thought` は届きません。CLI / SDK が思考テキストを送れば、そのまま転送します。
+² ツールが使える環境で実際に使われた場合のみ。claude 2.1.312 には TodoWrite がなく、grok の `todo_write` の入力形式は未確認です。
+³ `codex exec --json` はエージェントのメッセージを、トークン単位ではなく 1 件ずつまとめて送ります。
+
+devin の CLI には構造化出力がありません（人間向けの `--verbosity` だけで、パースはしません）。devin の思考やツールを表示したいときは `transport: "acp"` を使ってください。
+
+構造化出力は codex-cli 0.159.3（`exec --json`）、claude 2.1.312（`stream-json`）、agy 1.4.10（`--output-format stream-json`）、grok 1.0.70（`--output-format streaming-messages-json`）で確認しています。これらのオプションがない古い build は `cli` transport では使えません。
+
+### 生のイベントを見る
+
+`HEADLESS_CORE_DEBUG_EVENTS=1`（`createHeadlessCore({ env })` またはプロセスの環境変数）を指定すると、各 transport が受け取った生のイベントを 1 行の JSON として stderr に出します。対象は CLI の stdout のイベント、codex app-server の通知、ACP の `session/update` の params、Agent SDK のメッセージです。
+
+```bash
+HEADLESS_CORE_DEBUG_EVENTS=1 node app.mjs 2> events.jsonl
+# {"headlessCoreEvent":"codex:cli","event":{"type":"item.completed","item":{...}}}
+```
+
+変数がなければ何も出力しません。
 
 ## ツール使用（claude）
 
@@ -336,8 +395,8 @@ const output = await headless.run({
 | `sdk` | `tools`、`permissionMode`、`allowedTools`、`permissionPrompts: "none"`（`bypassPermissions` のときは `allowDangerouslySkipPermissions` も） |
 
 - 許可待ちで止まることはありません。許可されていない操作はその場で拒否され、Claude にその旨が伝わって実行が続きます。拒否は `status: "denied"` の `toolUse` event として通知され、run は正常に完了します。一方 timeout は `error.kind: "agent_stopped"` で失敗するため区別できます。
-- `toolUse` event: `started`（`input` 付き）→ `completed` / `failed`（ツール側のエラー、`output` 付き）または `denied`（理由が `output`）。subagent 内の呼び出しには `parentToolUseId` が付きます。`partialOutput` に流れるのはトップレベルのテキストだけ（subagent のテキストは除外）で、`result` メッセージが最終出力になります。
-- エージェントの作業場所は `cwd` です。`HeadlessCoreConfig.cwd`、または `run()` / `createSession()` ごとの `cwd`（会話ごとに clone 先を分ける場合など）。`cli` transport が `stream-json` を使うのはツール有効時のみで、テキストのみの実行は `--output-format text` のままです。
+- `toolUse` event: `started`（`input`、`kind`、`title` 付き）→ `completed` / `failed`（ツール側のエラー、`output` 付き）または `denied`（理由が `output`）。subagent 内の呼び出しには `parentToolUseId` が付きます。`partialOutput` に流れるのはトップレベルのテキストだけ（subagent のテキストは除外）で、`result` メッセージが最終出力になります。
+- エージェントの作業場所は `cwd` です。`HeadlessCoreConfig.cwd`、または `run()` / `createSession()` ごとの `cwd`（会話ごとに clone 先を分ける場合など）。`cli` transport は常に `stream-json` で実行します。テキストのみの実行は `--tools ""` を付け、`--output-format text` が出力していたのと同じ `result` のテキストを返します。
 - claude 以外の provider に `agent.tools` を渡すと `ToolsError`（`UNSUPPORTED_TOOLS`）、形式が不正なら `INVALID_TOOLS` になります。どちらも `onFallback` には回りません。
 - ツールを使う実行はテキスト回答より時間がかかるため、`timeoutMs` を長めにしてください。
 
@@ -422,10 +481,10 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 
 | agent | Headless 時の挙動 |
 | --- | --- |
-| Codex | `--sandbox read-only`（ファイル書き込み不可） |
-| Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ）。`sdk` transport も同じ posture（`tools: []` と `permissionMode: "dontAsk"`）。`agent.tools` でツールを有効にでき、その場合も許可待ちで止まらない（ツール使用（claude）参照）。prompt は `--` の後に渡す |
-| Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる。ツールがそれでも自動拒否された場合、Agy は stdout 空のまま exit 0 で stderr に通知を出すことがあり、そのときは失敗として扱う。`acp` transport でも同じ posture を維持する: session は編集可能な mode（`accept-edits` / `auto_edit` / `yolo`）を選択し、`session/request_permission` は自動承認される。 |
-| Grok | 特別な sandbox フラグなし（`grok --single` の headless 実行はツール確認で停止しない）。`acp` transport も同じ posture: `grok agent` を `--always-approve` で起動し、`session/request_permission` は自動承認 |
+| Codex | `--sandbox read-only`（ファイル書き込み不可）。`codex exec --json` で実行し、最後のエージェントメッセージを出力にする。stderr はエラーメッセージにだけ使う |
+| Claude Code | `--tools ""`（ツール無効・テキスト入出力のみ）と `--output-format stream-json --verbose --include-partial-messages`。`sdk` transport も同じ posture（`tools: []` と `permissionMode: "dontAsk"`）。`agent.tools` でツールを有効にでき、その場合も許可待ちで止まらない（ツール使用（claude）参照）。prompt は `--` の後に渡す |
+| Agy | 非対話の `--print` でもツール実行とファイル書き込み（画像生成など）ができるよう、`--dangerously-skip-permissions` と `--mode accept-edits` を付与する。`--print-timeout` は実行の `timeoutMs` に合わせる。`--output-format stream-json` で実行する（`--print` は prompt を値として受け取るので、その前に置く）。ツールがそれでも自動拒否された場合、Agy は stdout 空のまま exit 0 で stderr に通知を出すことがあり、そのときは失敗として扱う。`acp` transport でも同じ posture を維持する: session は編集可能な mode（`accept-edits` / `auto_edit` / `yolo`）を選択し、`session/request_permission` は自動承認される。 |
+| Grok | 特別な sandbox フラグなし（`grok --single` の headless 実行はツール確認で停止しない）。`--output-format streaming-messages-json --include-partial-messages` で実行する。`acp` transport も同じ posture: `grok agent` を `--always-approve` で起動し、`session/request_permission` は自動承認 |
 | Devin | `--print --respect-workspace-trust false --permission-mode auto`（read-only ツールのみ自動承認・ファイル書き込み不可）。prompt は `--` の後に渡す |
 
 ## Models Config

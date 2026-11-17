@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
+
+### Added
+
+- Every provider/transport now reports what the agent is doing through the same `ProgressEvent` fields, so one renderer covers claude, codex, agy, grok and devin (see the README support table):
+  - `ProgressEvent.thought`: thinking deltas (including summarized reasoning). Never part of the final output and never on the same event as `partialOutput`.
+  - `ToolUseEvent.kind` (`ToolKind`, aligned with ACP: `read` / `edit` / `delete` / `move` / `search` / `execute` / `think` / `fetch` / `other`), `title` (one line, at most `TOOL_TITLE_LIMIT` = 200 characters) and `locations` (`{ path, line? }[]`). Tool output is truncated to `TOOL_OUTPUT_LIMIT` (8192) characters. `started` may repeat for one id when the title or input becomes known; merge by `id`.
+  - `ProgressEvent.plan` (`PlanEntry[]`): the full current plan on every update — claude TodoWrite, codex `todo_list` / `turn/plan/updated`, ACP `plan`.
+- ACP (agy / grok / devin): `agent_thought_chunk`, `tool_call` / `tool_call_update` (merged per `toolCallId`, updates may precede the call) and `plan` updates are reported instead of dropped.
+- codex `app-server`: `item/started` / `item/completed` (commands, file changes, web search, MCP and dynamic tools), reasoning deltas and `turn/plan/updated`.
+- `HEADLESS_CORE_DEBUG_EVENTS=1` writes every raw transport event to stderr as one JSON line.
+
+### Changed
+
+- `cli` transports read structured output instead of plain text. The final output is unchanged (the stream's final result), and stderr is no longer streamed as `partialOutput` — it only explains failures:
+  - claude: always `--output-format stream-json --verbose --include-partial-messages` (text-only runs keep `--tools ""`), so text arrives as deltas without tools too.
+  - codex: `codex exec --json`; the last agent message is the output.
+  - agy: `--output-format stream-json` (placed before `--print`).
+  - grok: `--output-format streaming-messages-json --include-partial-messages`.
+  - devin has no structured output and keeps `--print` text; use `transport: "acp"` for thinking and tool calls.
+- `ProgressEvent.message` for tool events uses the tool title when there is one (`git status started`).
+
+## 0.6.0
 
 ### Added
 

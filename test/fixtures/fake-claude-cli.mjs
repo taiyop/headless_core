@@ -60,6 +60,30 @@ const config = {
 };
 emit({ type: "system", subtype: "init", tools, permissionMode: config.permissionMode, cwd: config.cwd });
 
+const delta = (type, payload, parent = null) =>
+  emit({
+    type: "stream_event",
+    parent_tool_use_id: parent,
+    event: { type: "content_block_delta", index: 0, delta: { type, ...payload } }
+  });
+
+if (tools.length === 0) {
+  // Text-only posture (`--tools ""`): what `--output-format text` would print
+  // is the result message; deltas and thinking stream ahead of it.
+  const answer = `PROMPT:${prompt}`;
+  emit({ type: "stream_event", parent_tool_use_id: null, event: { type: "message_start", message: { id: "m1" } } });
+  delta("thinking_delta", { thinking: "ponder" });
+  delta("text_delta", { text: answer.slice(0, 3) });
+  delta("text_delta", { text: answer.slice(3) });
+  emit({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { id: "m1", content: [{ type: "thinking", thinking: "ponder" }, { type: "text", text: answer }] }
+  });
+  emit({ type: "result", subtype: "success", is_error: false, result: answer });
+  process.exit(0);
+}
+
 if (prompt === "hang") {
   setInterval(() => undefined, 1_000);
 } else {
@@ -86,15 +110,39 @@ if (prompt === "hang") {
       }
     });
   }
-  const delta = (text, parent = null) =>
+  if (prompt.includes("todo")) {
+    // Without partial messages only the whole thinking block arrives.
     emit({
-      type: "stream_event",
-      parent_tool_use_id: parent,
-      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }
+      type: "assistant",
+      parent_tool_use_id: null,
+      message: {
+        id: "m2",
+        content: [
+          { type: "thinking", thinking: "plan first" },
+          {
+            type: "tool_use",
+            id: "t3",
+            name: "TodoWrite",
+            input: {
+              todos: [
+                { content: "Clone", status: "completed", activeForm: "Cloning" },
+                { content: "Read", status: "in_progress", activeForm: "Reading" }
+              ]
+            }
+          }
+        ]
+      }
     });
-  delta("sub-agent text", "t1");
-  delta("Hel");
-  delta("lo");
+    emit({
+      type: "user",
+      parent_tool_use_id: null,
+      message: { content: [{ type: "tool_result", tool_use_id: "t3", content: "ok" }] }
+    });
+  }
+  delta("text_delta", { text: "sub-agent text" }, "t1");
+  delta("thinking_delta", { thinking: "sub-agent thought" }, "t1");
+  delta("text_delta", { text: "Hel" });
+  delta("text_delta", { text: "lo" });
   if (prompt === "error") {
     emit({ type: "result", subtype: "success", is_error: true, result: "API Error: 429 rate limit" });
   } else if (prompt === "no-result") {
