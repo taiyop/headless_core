@@ -2,11 +2,11 @@
 
 A core library for running AI Agent CLIs in headless mode from Node.js.
 
-It allows you to run local CLIs such as Claude Code, Codex, Grok, Agy, and Devin using the same `run()` API, progress events, fallback hooks, and model selection mechanisms.
+It allows you to run local CLIs such as Claude Code, Codex, Grok, Agy, Devin, and Mistral Vibe using the same `run()` API, progress events, fallback hooks, and model selection mechanisms.
 
 ## Features
 
-- CLI execution for Claude Code / Codex / Grok / Agy / Devin
+- CLI execution for Claude Code / Codex / Grok / Agy / Devin / Mistral Vibe
 - TypeScript API
 - Progress notifications via `onProgress`: answer deltas, thinking, tool calls (commands, file reads/edits, searches) and plans, in one shape for every provider
 - Opt-in tool use for claude (clone repositories, read files, fetch the web)
@@ -168,7 +168,7 @@ const codex = await headless.getUsageLimits({ agent: "codex" });
 | --- | --- | --- |
 | codex | `codex app-server` `account/rateLimits/read` | Whatever the plan defines (e.g. 5-hour + weekly, or monthly on free) |
 | claude | Claude Agent SDK `/usage` data (requires `@anthropic-ai/claude-agent-sdk` and a claude.ai login) | 5-hour, weekly, per-model weekly |
-| agy / grok / devin | — | `supported: false` (the CLIs expose no plan usage) |
+| agy / grok / devin / mistral | — | `supported: false` (the CLIs expose no plan usage) |
 
 Provider-side failures never throw: they come back as `available: false` with `error`. No prompt is sent, so reading usage does not consume any. The claude source is an experimental SDK API and may change.
 
@@ -186,6 +186,7 @@ Closes all sessions and terminates every persistent agent process owned by this 
 | `agy` | `acp` | `agy_acp_server` (Agent Client Protocol over stdio) |
 | `grok` | `acp` | `grok agent --always-approve stdio` (Agent Client Protocol over stdio) |
 | `devin` | `acp` | `devin acp` (Agent Client Protocol over stdio) |
+| `mistral` | `acp` | `vibe-acp` (Agent Client Protocol over stdio) |
 | `claude` | `sdk` | Claude Agent SDK streaming-input query (`@anthropic-ai/claude-agent-sdk`) |
 | any | `cli` (default) | one-shot spawn per `run()` |
 
@@ -336,6 +337,8 @@ What each provider/transport reports:
 | grok | `acp` | ✓ | ✓ | ✓ | ✓ |
 | devin | `cli` | stdout as printed | — | — | — |
 | devin | `acp` | ✓ | ✓ | ✓ | ✓ |
+| mistral | `cli` | ✓ (per completed message) | ✓ | ✓ (per completed call) | — |
+| mistral | `acp` | ✓ | ✓ | ✓ | ✓ |
 
 ¹ claude 2.1.312 streams thinking deltas with empty text (thinking display `updates`), so no `thought` is reported with that build; thinking text is forwarded whenever the CLI/SDK sends it.
 ² Only when the tool is available and used: claude 2.1.312 does not offer TodoWrite, and the grok `todo_write` input shape is unverified.
@@ -427,6 +430,7 @@ Per-provider mapping:
 | Codex | `model_reasoning_effort` (CLI `-c` / app-server `turn/start` `effort`) | Levels pass through verbatim. Per-model support is enforced from `supported_reasoning_levels` / `supportedReasoningEfforts`. `default` omits the parameter |
 | Claude Code | `--effort` (cli) / Agent SDK `effort` option and `effortLevel` flag setting (sdk) | Accepts `low`, `medium`, `high`, `xhigh`, `max`. On `sdk`, per-model support is enforced from `supportedModels()` |
 | Grok | `--effort` (cli) / ACP `reasoning_effort` config option (acp) | Accepts `low`, `medium`, `high`, `xhigh`. On `acp`, per-model support is enforced from the session's `models` catalog |
+| Mistral Vibe | ACP `thinking` config option | CLI accepts only `default`; ACP validates advertised levels and maps `none` to `off` |
 | Agy (Gemini-family) | level-embedded variant ids (`--model gemini-3-8-flash-low`) or `--effort` | A variant carrying the requested level wins; `none` maps only to an explicit non-thinking variant (`gemini-2-5-flash-none`), never to `minimal`; remaining in-range levels use `--effort low|medium|high` |
 | Devin | variant uids (`--model <model>-<level>`) or ACP `thought_level` | `none` maps only to an explicit non-reasoning variant (`gpt-5-4-none`, or the family's level-less sibling among thinking variants) — never to a mechanical `<model>-none`. Other levels must match an advertised variant or `thought_level` |
 
@@ -467,6 +471,28 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 | `signal` | `AbortSignal` to abort execution |
 | `timeoutMs` | Timeout specific to this execution |
 
+### Mistral Vibe
+
+Use `provider: "mistral"` with Mistral Vibe 3.1 or later. Install and sign in using [Mistral's setup instructions](https://github.com/mistralai/mistral-vibe), then use the same credentials for `vibe` and `vibe-acp`. Headless Core never starts browser authentication.
+
+```ts
+const output = await headless.run({
+  agent: { provider: "mistral" },
+  prompt: "Explain this project"
+});
+const session = await headless.createSession({
+  agent: { provider: "mistral", transport: "acp" }
+});
+const models = await session.getAvailableModels();
+await session.run({ prompt: "Explain this project" });
+await session.close();
+await headless.shutdown();
+```
+
+CLI runs use `vibe --agent ask --output streaming --prompt ...`; answers and thoughts arrive per completed history entry, and the final output is the last assistant message. ACP sessions also select `ask` and deny permission requests, so neither transport waits for approval. Model IDs are Vibe **aliases**, including custom aliases, rather than API model names. `default` uses Vibe's configured model. `models inspect` reads aliases through ACP without sending a model prompt. Override the binaries with `VIBE_BIN` and `VIBE_ACP_BIN`.
+
+CLI effort must be omitted or `default`; other values raise `UNSUPPORTED_EFFORT`. ACP uses its advertised `thinking` levels, mapping `none` to `off`. An explicit `default` model/effort restores the session's initial selection.
+
 ## Supported Agents
 
 | agent | binary | model option | reasoning effort |
@@ -476,6 +502,7 @@ So an effort can be supported on `cli` while unsupported on `acp`: `gpt-6-luna` 
 | Grok | `grok` or `GROK_BIN` (both transports; acp runs `grok agent --always-approve stdio`) | `--model` (cli) / ACP `model` config option (acp) | `--effort low|medium|high|xhigh` (cli) / ACP `reasoning_effort` config option (acp) |
 | Agy | `agy` or `AGY_BIN` (cli); `agy_acp_server` or `AGY_ACP_BIN` (acp) | `--model` | Level-embedded variant ids win (`gemini-3-8-flash-low`); otherwise `--effort low|medium|high` (cli) or the ACP effort config option (acp). `none` requires an advertised non-thinking variant |
 | Devin | `devin` or `DEVIN_BIN` | `--model` | Folded into the model uid: `model` + effort becomes `--model <model>-<effort>` (e.g. `claude-opus-5` + `high` -> `claude-opus-5-high`). Requires an explicit model; only advertised variants are used — `none` maps to an explicit non-reasoning variant or fails |
+| Mistral Vibe (`mistral`) | `vibe` / `VIBE_BIN` (cli); `vibe-acp` / `VIBE_ACP_BIN` (acp) | `--model <alias>` (cli) / ACP `model` option | CLI: `default` only; ACP: advertised `thinking` levels (`none` → `off`) |
 
 ### Headless tool / permission notes
 

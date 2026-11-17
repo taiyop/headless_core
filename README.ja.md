@@ -2,11 +2,11 @@
 
 AI Agent CLI を Node.js から headless mode で実行するためのコアライブラリです。
 
-Claude Code、Codex、Grok、Agy、Devin などのローカル CLI を、同じ `run()` API、進捗イベント、fallback hook、モデル選択の仕組みで扱えます。
+Claude Code、Codex、Grok、Agy、Devin、Mistral Vibe などのローカル CLI を、同じ `run()` API、進捗イベント、fallback hook、モデル選択の仕組みで扱えます。
 
 ## Features
 
-- Claude Code / Codex / Grok / Agy / Devin の CLI 実行
+- Claude Code / Codex / Grok / Agy / Devin / Mistral Vibe の CLI 実行
 - TypeScript API
 - `onProgress` で本文の差分・思考・ツール呼び出し（コマンド、ファイルの読み取り・編集、検索）・計画を、全 provider 共通の形で通知
 - claude のツール使用をオプトインで有効化（リポジトリの clone、ファイル読み取り、Web 取得）
@@ -168,7 +168,7 @@ const codex = await headless.getUsageLimits({ agent: "codex" });
 | --- | --- | --- |
 | codex | `codex app-server` の `account/rateLimits/read` | プランに応じて(例: 5時間 + weekly、free は monthly) |
 | claude | Claude Agent SDK の `/usage` データ(`@anthropic-ai/claude-agent-sdk` と claude.ai ログインが必要) | 5時間、weekly、モデル別 weekly |
-| agy / grok / devin | — | `supported: false`(CLI がプラン利用量を公開していない) |
+| agy / grok / devin / mistral | — | `supported: false`(CLI がプラン利用量を公開していない) |
 
 プロバイダー側の失敗は throw せず `available: false` と `error` で返します。プロンプトは送らないので、取得自体で利用量は消費しません。claude の取得元は SDK の experimental API のため将来変わる可能性があります。
 
@@ -186,6 +186,7 @@ const codex = await headless.getUsageLimits({ agent: "codex" });
 | `agy` | `acp` | `agy_acp_server`（stdio 上の Agent Client Protocol） |
 | `grok` | `acp` | `grok agent --always-approve stdio`（stdio 上の Agent Client Protocol） |
 | `devin` | `acp` | `devin acp`（stdio 上の Agent Client Protocol） |
+| `mistral` | `acp` | `vibe-acp` (Agent Client Protocol over stdio) |
 | `claude` | `sdk` | Claude Agent SDK の streaming input query（`@anthropic-ai/claude-agent-sdk`） |
 | 任意 | `cli`（デフォルト） | `run()` ごとの one-shot spawn |
 
@@ -336,6 +337,8 @@ provider / transport ごとの対応:
 | grok | `acp` | ✓ | ✓ | ✓ | ✓ |
 | devin | `cli` | stdout のまま | — | — | — |
 | devin | `acp` | ✓ | ✓ | ✓ | ✓ |
+| mistral | `cli` | ✓ (per completed message) | ✓ | ✓ (per completed call) | — |
+| mistral | `acp` | ✓ | ✓ | ✓ | ✓ |
 
 ¹ claude 2.1.312 は thinking の差分を空のテキストで送る（thinking display が `updates`）ため、この build では `thought` は届きません。CLI / SDK が思考テキストを送れば、そのまま転送します。
 ² ツールが使える環境で実際に使われた場合のみ。claude 2.1.312 には TodoWrite がなく、grok の `todo_write` の入力形式は未確認です。
@@ -427,6 +430,7 @@ provider 別の変換:
 | Codex | `model_reasoning_effort`（CLI `-c` / app-server `turn/start` の `effort`） | level はそのまま透過。`supported_reasoning_levels` / `supportedReasoningEfforts` で model ごとの対応を検証。`default` はパラメータ自体を送らない |
 | Claude Code | `--effort`（cli）/ Agent SDK の `effort` option と `effortLevel` flag setting（sdk） | `low`, `medium`, `high`, `xhigh`, `max`。`sdk` では `supportedModels()` の model ごとの対応 level で検証 |
 | Grok | `--effort`（cli）/ ACP `reasoning_effort` config option（acp） | `low`, `medium`, `high`, `xhigh`。`acp` では session の `models` カタログから model ごとの対応を検証 |
+| Mistral Vibe | ACP `thinking` config option | CLI accepts only `default`; ACP validates advertised levels and maps `none` to `off` |
 | Agy（Gemini 系） | level 埋め込み variant id（`--model gemini-3-8-flash-low`）または `--effort` | 要求 level を持つ variant が優先。`none` は明示的な non-thinking variant（`gemini-2-5-flash-none`）にのみマップし、`minimal` へは変換しない。それ以外の flag 範囲内の level は `--effort low|medium|high` |
 | Devin | variant uid（`--model <model>-<level>`）または ACP `thought_level` | `none` は明示的な non-reasoning variant（`gpt-5-4-none`、または thinking variant と並ぶ level 無しの sibling）にのみマップ — 機械的な `<model>-none` は生成しない。その他の level も advertised variant か `thought_level` に一致する必要がある |
 
@@ -467,6 +471,28 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | `signal` | 実行を中断する `AbortSignal` |
 | `timeoutMs` | この実行だけの timeout |
 
+### Mistral Vibe
+
+`provider: "mistral"` で Mistral Vibe 3.1 以降を利用できます。[公式手順](https://github.com/mistralai/mistral-vibe)でインストール・サインインを済ませてください。`vibe` と `vibe-acp` は同じ認証情報を利用します。Headless Core からブラウザ認証は開始しません。
+
+```ts
+const output = await headless.run({
+  agent: { provider: "mistral" },
+  prompt: "このプロジェクトを説明して"
+});
+const session = await headless.createSession({
+  agent: { provider: "mistral", transport: "acp" }
+});
+const models = await session.getAvailableModels();
+await session.run({ prompt: "このプロジェクトを説明して" });
+await session.close();
+await headless.shutdown();
+```
+
+CLI は `vibe --agent ask --output streaming --prompt ...` を使い、完了した history entry ごとに本文・思考・ツール結果を通知します。戻り値は最後の assistant message です。ACP も `ask` モードを選択し、権限要求は拒否するため、確認入力で停止しません。model は API のモデル名ではなく、カスタム設定も含む Vibe の **alias** を指定します。`default` は Vibe の設定値を使います。`models inspect` は推論プロンプトを送らずに ACP から alias を取得します。実行ファイルは `VIBE_BIN` / `VIBE_ACP_BIN` で変更できます。
+
+CLI の effort は省略または `default` のみで、明示指定は `UNSUPPORTED_EFFORT` になります。ACP は提示された `thinking` level を検証し、`none` を `off` に変換します。model / effort に `default` を明示すると session 開始時の値へ戻ります。
+
 ## Supported Agents
 
 | agent | binary | model option | reasoning effort |
@@ -476,6 +502,7 @@ devin の capability は transport ごとに読み取られ、両者は一致し
 | Grok | `grok` or `GROK_BIN`（両 transport 共通。acp は `grok agent --always-approve stdio` を起動） | `--model`（cli）/ ACP `model` config option（acp） | `--effort low|medium|high|xhigh`（cli）/ ACP `reasoning_effort` config option（acp） |
 | Agy | `agy` or `AGY_BIN`（cli）; `agy_acp_server` or `AGY_ACP_BIN`（acp） | `--model` | level 埋め込み variant id が優先（`gemini-3-8-flash-low`）、それ以外は `--effort low|medium|high`（cli）または ACP effort config option（acp）。`none` は advertise された non-thinking variant が必要 |
 | Devin | `devin` or `DEVIN_BIN` | `--model` | model uid に折り畳む: `model` + effort は `--model <model>-<effort>` になる（例: `claude-opus-5` + `high` -> `claude-opus-5-high`）。model の明示指定が必要。advertise された variant のみ使用 — `none` は明示的な non-reasoning variant にマップ、無ければエラー |
+| Mistral Vibe (`mistral`) | `vibe` / `VIBE_BIN` (cli); `vibe-acp` / `VIBE_ACP_BIN` (acp) | `--model <alias>` (cli) / ACP `model` option | CLI: `default` only; ACP: advertised `thinking` levels (`none` → `off`) |
 
 ### Headless 時のツール / 権限
 

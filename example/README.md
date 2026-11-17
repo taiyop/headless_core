@@ -2,7 +2,7 @@
 
 `headless_core` の `getAvailableModels({ agent })` と `createHeadlessCore().run()` / `createSession()` を使い、共有設定にある model と `default` を選べる最小チャットUIです。Codex / Claude を選んだ場合は、実行時 option として `reasoningEffort` も選べます。
 
-`Transport` で実行経路を切り替えられます。Codex は `cli` / `app-server`、Claude は `cli` / `sdk`、Agy / Grok / Devin は `cli` / `acp` を選べるので、`codex app-server` や Claude Agent SDK、`agy_acp_server` / `grok agent stdio` / `devin acp` の永続 session 動作もこのUIから試せます。
+`Transport` で実行経路を切り替えられます。Codex は `cli` / `app-server`、Claude は `cli` / `sdk`、Agy / Grok / Devin / Mistral Vibe は `cli` / `acp` を選べるので、`codex app-server` や Claude Agent SDK、`agy_acp_server` / `grok agent stdio` / `devin acp` の永続 session 動作もこのUIから試せます。
 
 ## Run
 
@@ -32,7 +32,7 @@ GUIの `Models source` で `./example/models.json` (Local) と `~/.config/headle
 
 UI上でも `Run inspect` を押すと、同じ `headless-core models inspect` 相当の stdout / stderr を確認できます。これは検証用で、`example/models.json` は更新しません。
 
-`Usage limits` パネルには各 Agent のプラン利用残量(5時間 / weekly / monthly など)が表示されます。起動時に自動で取得し、`Refresh usage` で再取得します(`headless.getAllUsageLimits()` を `GET /api/usage` 経由で呼んでいます)。codex と claude のみ対応で、agy / grok / devin は `not supported` と表示されます。
+`Usage limits` パネルには各 Agent のプラン利用残量(5時間 / weekly / monthly など)が表示されます。起動時に自動で取得し、`Refresh usage` で再取得します(`headless.getAllUsageLimits()` を `GET /api/usage` 経由で呼んでいます)。codex と claude のみ対応で、agy / grok / devin / mistral は `not supported` と表示されます。
 
 手元でまずUIだけ確認したい場合は、サンプルをコピーして使えます。
 
@@ -52,6 +52,7 @@ npm run example
 | Grok | `cli` / `acp` | `grok --single` の1回起動 / `grok agent stdio` 常駐プロセス上の ACP session |
 | Agy | `cli` / `acp` | `agy --print` の1回起動 / `agy_acp_server` 常駐プロセス上の ACP session |
 | Devin | `cli` / `acp` | `devin --print` の1回起動 / `devin acp` 常駐プロセス上の ACP session |
+| Mistral Vibe | `cli` / `acp` | `vibe --prompt` / `vibe-acp` の継続 session。provider は `mistral`、モデルは Vibe の alias |
 | その他 | `cli` | 1回起動のみ |
 
 - `cli`: 送信ごとにCLIを起動し、会話 transcript を毎回 prompt として渡します。

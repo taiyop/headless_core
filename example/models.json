@@ -29,6 +29,7 @@
       "swe-2",
       "claude-opus-5",
       "gpt-6-astra"
-    ]
+    ],
+    "mistral": []
   }
 }

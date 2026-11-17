@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  AGENT_IDS,
   createHeadlessCore,
   DEFAULT_REASONING_EFFORT_ID,
   DEFAULT_MODEL_ID,
@@ -25,7 +26,7 @@ const localModelsPath = envModelsPath ?? path.join(__dirname, "models.json");
 // Same default as resolveModelsConfigPath in src/config.ts.
 const sharedModelsPath = path.join(homedir(), ".config", "headless-core", "models.json");
 
-const agents = ["codex", "claude", "agy", "grok", "devin"];
+const agents = [...AGENT_IDS];
 // Persistent transports per provider (see "Persistent sessions" in the main
 // README): codex app-server, agy_acp_server, grok agent stdio, and devin acp
 // keep one process alive across runs; claude sdk keeps a Claude Agent SDK
@@ -35,7 +36,8 @@ const transportsByAgent = {
   claude: ["cli", "sdk"],
   agy: ["cli", "acp"],
   grok: ["cli", "acp"],
-  devin: ["cli", "acp"]
+  devin: ["cli", "acp"],
+  mistral: ["cli", "acp"]
 };
 // Tools toggle (claude only, see "Tool use" in the main README). Clones and
 // file reads stay inside a per-chat workspace under the OS temp dir; anything
