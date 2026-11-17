@@ -13,6 +13,8 @@ import {
 import { CodexExecConverter } from "./codexProgress.js";
 import { DevinAcpRuntime, DevinAcpSession, devinAcpRuntimeKey } from "./devinAcp.js";
 import { devinModelWithEffort, resolveDevinModel } from "./devinModel.js";
+import { MistralAcpRuntime, MistralAcpSession, mistralAcpRuntimeKey } from "./mistralAcp.js";
+import { MistralStreamConverter } from "./mistralProgress.js";
 import { GrokAcpRuntime, GrokAcpSession, grokAcpRuntimeKey } from "./grokAcp.js";
 import { parseRequestedEffort, unsupportedEffort } from "./effort.js";
 import { AgyStreamConverter } from "./agyProgress.js";
@@ -130,6 +132,11 @@ async function createSession(ctx: SessionContext, options: CreateSessionOptions)
       const key = grokAcpRuntimeKey(ctx.env);
       const runtime = await ctx.manager.acquire(key, () => GrokAcpRuntime.start(ctx));
       return GrokAcpSession.create(runtime, ctx, agent, () => ctx.manager.release(key, runtime));
+    }
+    if (agent.provider === "mistral") {
+      const key = mistralAcpRuntimeKey(ctx.env);
+      const runtime = await ctx.manager.acquire(key, () => MistralAcpRuntime.start(ctx));
+      return MistralAcpSession.create(runtime, ctx, agent, () => ctx.manager.release(key, runtime));
     }
     const key = devinAcpRuntimeKey(ctx.env);
     const runtime = await ctx.manager.acquire(key, () => DevinAcpRuntime.start(ctx));
@@ -516,6 +523,17 @@ async function commandFor(
         prompt
       ],
       stream: () => new AgyStreamConverter()
+    };
+  }
+
+  if (provider === "mistral") {
+    if (effort) {
+      throw unsupportedEffort("mistral", modelId, effort, []);
+    }
+    return {
+      command: env.VIBE_BIN || "vibe",
+      args: ["--agent", "ask", "--output", "streaming", ...modelArgs, "--prompt", prompt],
+      stream: () => new MistralStreamConverter()
     };
   }
 

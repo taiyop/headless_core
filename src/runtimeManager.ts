@@ -32,7 +32,8 @@ const PERSISTENT_TRANSPORTS: Partial<Record<string, readonly AgentTransport[]>> 
   claude: ["sdk"],
   agy: ["acp"],
   grok: ["acp"],
-  devin: ["acp"]
+  devin: ["acp"],
+  mistral: ["acp"]
 };
 
 export function resolveTransport(agent: AgentSpec): AgentTransport {

@@ -45,6 +45,19 @@ export async function inspectAgentModels(agent: AgentId): Promise<InspectResult>
       return { agent, models: parseDevinModels(await run("devin", ["models", "list", "--format", "json"])) };
     }
 
+    if (agent === "mistral") {
+      // Vibe has no `models list` command. Inspect its ACP model aliases
+      // without sending a prompt or making a model inference request.
+      const { createHeadlessCore } = await import("./headlessCore.js");
+      const core = createHeadlessCore();
+      try {
+        const session = await core.createSession({ agent: { provider: "mistral", transport: "acp" } });
+        return { agent, models: (await session.getAvailableModels()).map((model) => model.id) };
+      } finally {
+        await core.shutdown();
+      }
+    }
+
     return { agent, models: parseGrokModels(await run("grok", ["models"])) };
   } catch (cause) {
     return { agent, models: [], warning: commandFailureReason(agent, cause) };
@@ -116,7 +129,9 @@ export function commandFailureReason(agent: AgentId, cause: unknown): string {
         ? "agy models"
         : agent === "devin"
           ? "devin models list --format json"
-          : "grok models";
+          : agent === "mistral"
+            ? "vibe-acp"
+            : "grok models";
   const stderr = getErrorOutput(cause, "stderr");
   if (stderr) {
     return `Command failed: ${command}: ${oneLine(stderr)}`;

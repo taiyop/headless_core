@@ -1,4 +1,4 @@
-export const AGENT_IDS = ["codex", "claude", "agy", "grok", "devin"] as const;
+export const AGENT_IDS = ["codex", "claude", "agy", "grok", "devin", "mistral"] as const;
 export const DEFAULT_MODEL_ID = "default";
 export const DEFAULT_REASONING_EFFORT_ID = "default";
 export const CLAUDE_MODEL_IDS = ["sonnet", "opus", "haiku", "fable"] as const;
@@ -45,7 +45,8 @@ export type GetAvailableReasoningEffortOptionsOptions = {
  * - `cli`: spawn a one-shot CLI process per run (the default, unchanged behavior).
  * - `app-server`: persistent `codex app-server` process (codex only).
  * - `acp`: persistent Agent Client Protocol process — `devin acp` for devin,
- *   `agy_acp_server` for agy, `grok agent --always-approve stdio` for grok.
+ *   `agy_acp_server` for agy, `grok agent --always-approve stdio` for grok,
+ *   `vibe-acp` for mistral.
  * - `sdk`: persistent Claude Agent SDK query (`@anthropic-ai/claude-agent-sdk`,
  *   claude only). The SDK is an optional peer dependency.
  */
@@ -165,7 +166,7 @@ export type HeadlessCore = {
    *
    * Supported: codex (app-server `account/rateLimits/read`) and claude
    * (Agent SDK, requires `@anthropic-ai/claude-agent-sdk` and a claude.ai
-   * login). agy, grok and devin report `supported: false`.
+   * login). agy, grok, devin and mistral report `supported: false`.
    */
   getUsageLimits(options: GetUsageLimitsOptions): Promise<AgentUsageLimits>;
   /** getUsageLimits() for every agent in AGENT_IDS, fetched in parallel. */

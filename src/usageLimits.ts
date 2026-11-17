@@ -48,7 +48,8 @@ const CLAUDE_WINDOWS: ReadonlyArray<{ key: keyof ClaudeRateLimits; label: string
 const UNSUPPORTED_REASON: Partial<Record<AgentId, string>> = {
   agy: "agy does not expose plan usage limits",
   grok: "grok does not expose plan usage limits (`grok usage` only reports per-session token cost)",
-  devin: "devin does not expose plan usage limits"
+  devin: "devin does not expose plan usage limits",
+  mistral: "Mistral Vibe does not expose plan usage limits"
 };
 
 export async function getUsageLimits(ctx: SessionContext, agent: string): Promise<AgentUsageLimits> {

@@ -31,6 +31,8 @@ const REASONING_EFFORT_OPTIONS_BY_AGENT = {
   // --model claude-opus-5-high). Variant uids span the full level range
   // including explicit non-reasoning variants (-none), so the whole
   // vocabulary is selectable; per-model support is enforced at run time.
+  // CLI accepts only default; ACP validates these against its thinking option.
+  mistral: [DEFAULT_REASONING_EFFORT_ID, "none", "minimal", "low", "medium", "high", "xhigh", "max"],
   devin: [DEFAULT_REASONING_EFFORT_ID, "none", "minimal", "low", "medium", "high", "xhigh", "max"]
 } as const;
 
